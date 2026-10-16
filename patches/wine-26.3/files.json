@@ -1,0 +1,101 @@
+{
+  "base": "CrossOver 26.3.0 / Wine 11.0-8726-g2e2f5fca349",
+  "source": "https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz",
+  "files": [
+    {
+      "path": "dlls/win32u/driver.c",
+      "before": "532c89b069c75d9a451a43b9d26e6e71e082f1b34515eeb1ab03c685a9d91037",
+      "after": "5617d4e7197833d88816032ddf2ad917eccbf62d2564e18160e5506b6bfe2a1a"
+    },
+    {
+      "path": "dlls/win32u/rawinput.c",
+      "before": "d70cfe75611a99de192d5482c48c790d3e4d06ed68099e7ced704cf931d0135a",
+      "after": "362dc2060a639bb4574ca058411d04d4fa1efa9b6c9864f0326181ffe24e12df"
+    },
+    {
+      "path": "dlls/winemac.drv/Makefile.in",
+      "before": "8ccca0e204038a5e208681069952617fcfb23cb976b92d43c05fd1cbe84a077d",
+      "after": "ec73dcbfcdfc1986147846c4442d46db893f93d53b7175c0fb30bfbbbf3c9943"
+    },
+    {
+      "path": "dlls/winemac.drv/cocoa_app.h",
+      "before": "2ce955c7b185df3f28edbecd0fe327d383019b59f8f74028fa7e17c44f75bf95",
+      "after": "68724109385d747182a5a35d1349a3391acaee3e51baeda1d3a04a2b30afe6c5"
+    },
+    {
+      "path": "dlls/winemac.drv/cocoa_app.m",
+      "before": "b9d0434dc8ecaf0379f8300e94f2e8c70b3b320c45b4cb9f7d6877acd2e94c30",
+      "after": "cbd15bd8ae0ffc249d507fbc1ad44952dbd81253170364a5e19bf947356fb21b"
+    },
+    {
+      "path": "dlls/winemac.drv/cocoa_gcmouse.m",
+      "before": null,
+      "after": "5167e233f0747684777e09a24492e1210faaed58f279e3a9c112a09e4b393b31"
+    },
+    {
+      "path": "dlls/winemac.drv/cx_tuner_config.h",
+      "before": null,
+      "after": "a2188a9c4ae5140fbb35513b265c46bd092d9a38543076dbf6e43fcf8899f58e"
+    },
+    {
+      "path": "dlls/winemac.drv/d3dmetal_objc.m",
+      "before": "6a2f914b8d1ece300170e388716bd6c26cf52d222aa9f32aac8a203e3b9f3976",
+      "after": "a57425e87a791cc17858982d84ded2fe368e7c6cf9705fc76010a59df419b9ee"
+    },
+    {
+      "path": "dlls/winemac.drv/event.c",
+      "before": "cb8344a2d76db2263365d1913262dc8105ca8409b71f8f09f3eaa1e4e76f4329",
+      "after": "a469bcfc6bc39184e4313c7cafb55311dd8c2597b7bbdc293325446ae0c4b271"
+    },
+    {
+      "path": "dlls/winemac.drv/gdi.c",
+      "before": "d96e80a17413a11fed94aee493756c6e3b8a277b29dabb463b726c91e667b92f",
+      "after": "9215cb9ff7a46d51e764f8cf6d301d2c083aa54f78f7692e0d751da25d421f27"
+    },
+    {
+      "path": "dlls/winemac.drv/macdrv_cocoa.h",
+      "before": "63792e5b5acfc51b70c9147e5349af98ead37f3acd452f0ed1e3c49601ef845e",
+      "after": "6af3c3dbda3594b61dda9a121ddfc401bfa5efc25ce0d19798f95986be8d595a"
+    },
+    {
+      "path": "dlls/winemac.drv/macdrv_main.c",
+      "before": "100b00c96b220c36855ad1816dff9349f12057bd3ced928a46f7a63068de4846",
+      "after": "2177d517ad9190368ce5070160d3c47c73e1a43cfa6f89c2d2284d59bdcce535"
+    },
+    {
+      "path": "dlls/winemac.drv/mouse.c",
+      "before": "29e6e3e3c3886178d1f1ac4974a2a793f121871932d81b2c21734a50e2b409a4",
+      "after": "13dfa01c935d46313ac159fe074577fa4bc2f5dc685525bd317b420576f3e221"
+    },
+    {
+      "path": "dlls/winemac.drv/mouse_fraction.h",
+      "before": null,
+      "after": "f0bbe306d6003743b8846b406913230ca3e3bcba6f581d5177516a317604aa55"
+    },
+    {
+      "path": "dlls/winemac.drv/wheel_raw.h",
+      "before": null,
+      "after": "cf54817cd56fcb02e73d21be3ef93ef20a444924d45f0bbfe8e1315ce2bd9c0a"
+    },
+    {
+      "path": "include/wine/gdi_driver.h",
+      "before": "258f6b58060d677ba9e5fc0c30f40a936e13c89a764824c3cab7b2a8fba9342d",
+      "after": "3386a76fc2f79e85f0acc6f27a885305539c4ba09cea43844033e7fff557f538"
+    },
+    {
+      "path": "include/wine/server_protocol.h",
+      "before": "bf7df2dfd9bb714832a425d560cd3d9fc51a0bef04eb7dd7074c0aa6c52b7038",
+      "after": "d5585989cd49f167e2c523eff1681db46a9b7520175d92cc3d41197e44a27863"
+    },
+    {
+      "path": "server/protocol.def",
+      "before": "efcfc4fef3a0e2c02ada7eeae79a32cc947b1537d4f218caad220b2a6bac3c2b",
+      "after": "fe36e6a664583ee239adeb23e7551496c5280f7be0293bbc8ba959680256011e"
+    },
+    {
+      "path": "server/queue.c",
+      "before": "b62110b4ce5fe09ac68d05b0954de7c92dc643d02724dec5794ce93a1495d88d",
+      "after": "27c6acf91557ddee4a34356a88ab343d759785b55a6039f355127528c4cd2dc3"
+    }
+  ]
+}

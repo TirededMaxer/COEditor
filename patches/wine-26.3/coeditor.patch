@@ -1,0 +1,1125 @@
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -713,6 +713,10 @@
+     return TRUE;
+ }
+ 
++static void nulldrv_SetRawInputMouse( BOOL enabled )
++{
++}
++
+ static LRESULT nulldrv_NotifyIcon( HWND hwnd, UINT msg, NOTIFYICONDATAW *data )
+ {
+     return -1;
+@@ -1149,6 +1153,11 @@
+     return load_driver()->pClipCursor( clip, reset );
+ }
+ 
++static void loaderdrv_SetRawInputMouse( BOOL enabled )
++{
++    load_driver()->pSetRawInputMouse( enabled );
++}
++
+ static LRESULT loaderdrv_NotifyIcon( HWND hwnd, UINT msg, NOTIFYICONDATAW *data )
+ {
+     return load_driver()->pNotifyIcon( hwnd, msg, data );
+@@ -1284,6 +1293,7 @@
+     loaderdrv_GetCursorPos,
+     loaderdrv_SetCursorPos,
+     loaderdrv_ClipCursor,
++    loaderdrv_SetRawInputMouse,
+     /* systray functions */
+     loaderdrv_NotifyIcon,
+     loaderdrv_CleanupIcons,
+@@ -1391,6 +1401,7 @@
+     SET_USER_FUNC(GetCursorPos);
+     SET_USER_FUNC(SetCursorPos);
+     SET_USER_FUNC(ClipCursor);
++    SET_USER_FUNC(SetRawInputMouse);
+     SET_USER_FUNC(NotifyIcon);
+     SET_USER_FUNC(CleanupIcons);
+     SET_USER_FUNC(SystrayDockInit);
+--- a/dlls/win32u/rawinput.c
++++ b/dlls/win32u/rawinput.c
+@@ -664,7 +664,7 @@
+     struct rawinput_device *server_devices;
+     RAWINPUTDEVICE *new_registered_devices;
+     SIZE_T size;
+-    BOOL ret;
++    BOOL ret, raw_mouse = FALSE;
+     UINT i;
+ 
+     TRACE( "devices %p, device_count %u, device_size %u.\n", devices, device_count, device_size );
+@@ -730,6 +730,8 @@
+         server_devices[i].usage = MAKELONG(registered_devices[i].usUsage, registered_devices[i].usUsagePage);
+         server_devices[i].flags = registered_devices[i].dwFlags;
+         server_devices[i].target = wine_server_user_handle( registered_devices[i].hwndTarget );
++        if (server_devices[i].usage == MAKELONG(HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC))
++            raw_mouse = TRUE;
+     }
+ 
+     SERVER_START_REQ( update_rawinput_devices )
+@@ -742,6 +744,8 @@
+     free( server_devices );
+ 
+     pthread_mutex_unlock( &rawinput_mutex );
++
++    if (ret) user_driver->pSetRawInputMouse( raw_mouse );
+ 
+     return ret;
+ }
+--- a/dlls/winemac.drv/Makefile.in
++++ b/dlls/winemac.drv/Makefile.in
+@@ -8,6 +8,7 @@
+ 	-framework Carbon \
+ 	-framework CoreVideo \
+ 	-framework Foundation \
++	-weak_framework GameController \
+ 	-framework IOKit \
+ 	-framework Metal \
+ 	-framework OpenGL \
+@@ -21,6 +22,7 @@
+ 	cocoa_cursorclipping.m \
+ 	cocoa_display.m \
+ 	cocoa_event.m \
++	cocoa_gcmouse.m \
+ 	cocoa_icon_utils.m \
+ 	cocoa_main.m \
+ 	cocoa_opengl.m \
+--- a/dlls/winemac.drv/cocoa_app.h
++++ b/dlls/winemac.drv/cocoa_app.h
+@@ -69,6 +69,9 @@
+ 
+     NSTimeInterval lastScrollTime;
+     double accumScrollX, accumScrollY;
++    NSTimeInterval lastPreciseScrollTime;
++    double preciseScrollRemainderX, preciseScrollRemainderY;
++    WineWindow* lastPreciseScrollWindow;
+ 
+     NSMutableDictionary* originalDisplayModes;
+     NSMutableDictionary* latentDisplayModes;
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -23,6 +23,13 @@
+ #import "cocoa_event.h"
+ #import "cocoa_window.h"
+ #import "cocoa_icon_utils.h"
++#include "mouse_fraction.h"
++#include "wheel_raw.h"
++#include "cx_tuner_config.h"
++#include <unistd.h>
++#import <IOKit/hid/IOHIDManager.h>
++#import <IOKit/hid/IOHIDKeys.h>
++#import <IOKit/hidsystem/IOHIDLib.h>
+ 
+ #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+ 
+@@ -56,6 +63,19 @@
+ 
+ bool macdrv_err_on;
+ 
++/* Sevoflurane owns Steam's visible interface. Keep only its bottled client
++ * processes out of the Dock; games and other Windows programs stay normal. */
++static bool cx_hide_steam_dock(void)
++{
++    const char *mode = getenv("CX_HIDE_STEAM_DOCK");
++    const char *name = getprogname();
++
++    return mode && !strcmp(mode, "1") && name &&
++           (!strcasecmp(name, "steam.exe") ||
++            !strcasecmp(name, "steamwebhelper.exe") ||
++            !strcasecmp(name, "steamservice.exe"));
++}
++
+ 
+ #if !defined(MAC_OS_VERSION_14_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_14_0
+ @interface NSApplication (CooperativeActivationSelectorsForOldSDKs)
+@@ -119,6 +139,7 @@
+ @property (retain, nonatomic) WineWindow* mouseCaptureWindow;
+ 
+     - (void) setupObservations;
++    - (void) postRawWheelX:(int)x y:(int)y;
+     - (void) applicationDidBecomeActive:(NSNotification *)notification;
+     - (void) handleApplicationShouldTerminateReply:(BOOL)reply;  /* CW Hack 22310 */
+ 
+@@ -126,6 +147,117 @@
+ 
+ @end
+ 
++
++/* Optional nonexclusive physical wheel reader, active only in the foreground.
++ * Permission requests require the explicit request option or one-time marker. */
++static IOHIDManagerRef cx_raw_wheel_manager;
++static CFMutableSetRef cx_raw_wheel_devices;
++
++static bool cx_hid_wheel_element(IOHIDElementRef element)
++{
++    int x, y;
++    return macdrv_hid_wheel_delta(IOHIDElementGetUsagePage(element),
++        IOHIDElementGetUsage(element), IOHIDElementIsRelative(element), 0, &x, &y);
++}
++
++static void cx_hid_wheel_matched(void *context, IOReturn result, void *sender, IOHIDDeviceRef device)
++{
++    CFArrayRef elements = IOHIDDeviceCopyMatchingElements(device, NULL, kIOHIDOptionsTypeNone);
++    if (!elements) return;
++    for (CFIndex i = 0; i < CFArrayGetCount(elements); i++)
++        if (cx_hid_wheel_element((IOHIDElementRef)CFArrayGetValueAtIndex(elements, i)))
++        {
++            CFSetAddValue(cx_raw_wheel_devices, device);
++            fprintf(stderr, "[CXWheelHID] physical wheel attached; devices=%ld\n",
++                    (long)CFSetGetCount(cx_raw_wheel_devices));
++            break;
++        }
++    CFRelease(elements);
++}
++
++static void cx_hid_wheel_removed(void *context, IOReturn result, void *sender, IOHIDDeviceRef device)
++{
++    CFSetRemoveValue(cx_raw_wheel_devices, device);
++}
++
++static void cx_hid_wheel_value(void *context, IOReturn result, void *sender, IOHIDValueRef value)
++{
++    IOHIDElementRef element = IOHIDValueGetElement(value);
++    int x, y;
++    if (result || ![NSApp isActive] ||
++        !CFSetContainsValue(cx_raw_wheel_devices, IOHIDElementGetDevice(element))) return;
++    if (macdrv_hid_wheel_delta(IOHIDElementGetUsagePage(element),
++        IOHIDElementGetUsage(element), IOHIDElementIsRelative(element),
++        IOHIDValueGetIntegerValue(value), &x, &y) && (x || y))
++    {
++
++        [[WineApplicationController sharedController] postRawWheelX:x y:y];
++        if (getenv("CX_WHEEL_TRACE") && !strcmp(getenv("CX_WHEEL_TRACE"), "1"))
++            fprintf(stderr, "[CXWheelHID] Windows delta=%d,%d\n", x, y);
++    }
++}
++
++static void cx_stop_raw_wheel(void)
++{
++    if (!cx_raw_wheel_manager) return;
++    IOHIDManagerUnscheduleFromRunLoop(cx_raw_wheel_manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
++    IOHIDManagerClose(cx_raw_wheel_manager, kIOHIDOptionsTypeNone);
++    CFRelease(cx_raw_wheel_manager);
++    cx_raw_wheel_manager = NULL;
++    CFRelease(cx_raw_wheel_devices);
++    cx_raw_wheel_devices = NULL;
++}
++
++static void cx_start_raw_wheel(void)
++{
++    struct cx_tuner_settings tuning = cx_tuner_read();
++    const char *mode = tuning.loaded ? (tuning.wheel ? "hid" : "off") : getenv("CX_WHEEL_INPUT");
++    IOReturn status;
++    if (tuning.loaded && !tuning.wheel) { cx_stop_raw_wheel(); return; }
++    if (cx_raw_wheel_manager || !mode || strcmp(mode, "hid")) return;
++    if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted)
++    {
++        static bool requested_access;
++        const char *request = getenv("CX_WHEEL_REQUEST_ACCESS");
++        /* Enabled only after the user authorizes displaying the system prompt.
++         * This API never grants access itself; macOS owns the decision. */
++        char marker[4096] = {0};
++        const char *prefix = getenv("WINEPREFIX");
++        bool marker_present = false;
++        if (prefix && getprogname() && !strcasecmp(getprogname(), "cs2.exe"))
++        {
++            snprintf(marker, sizeof(marker), "%s/drive_c/.cx-input-access-request", prefix);
++            marker_present = !access(marker, F_OK);
++        }
++        if (((request && !strcmp(request, "1")) || marker_present) && !requested_access)
++        {
++            requested_access = true;
++            if (marker_present) unlink(marker);
++            IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
++        }
++        fprintf(stderr, "[CXWheelHID] Input Monitoring permission required; native wheel unchanged\n");
++        return;
++    }
++    cx_raw_wheel_manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
++    if (!cx_raw_wheel_manager) return;
++    cx_raw_wheel_devices = CFSetCreateMutable(kCFAllocatorDefault, 0, &kCFTypeSetCallBacks);
++    IOHIDManagerSetDeviceMatching(cx_raw_wheel_manager, (CFDictionaryRef)@{
++        @kIOHIDDeviceUsagePageKey: @1, @kIOHIDDeviceUsageKey: @2 });
++    IOHIDManagerSetInputValueMatchingMultiple(cx_raw_wheel_manager, (CFArrayRef)@[
++        @{ @kIOHIDElementUsagePageKey: @1, @kIOHIDElementUsageKey: @0x38 },
++        @{ @kIOHIDElementUsagePageKey: @0x0c, @kIOHIDElementUsageKey: @0x238 } ]);
++    IOHIDManagerRegisterDeviceMatchingCallback(cx_raw_wheel_manager, cx_hid_wheel_matched, NULL);
++    IOHIDManagerRegisterDeviceRemovalCallback(cx_raw_wheel_manager, cx_hid_wheel_removed, NULL);
++    IOHIDManagerRegisterInputValueCallback(cx_raw_wheel_manager, cx_hid_wheel_value, NULL);
++    IOHIDManagerScheduleWithRunLoop(cx_raw_wheel_manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
++    status = IOHIDManagerOpen(cx_raw_wheel_manager, kIOHIDOptionsTypeNone);
++    if (status)
++    {
++        fprintf(stderr, "[CXWheelHID] open failed=%#x; native wheel unchanged\n", status);
++        cx_stop_raw_wheel();
++    }
++    else fprintf(stderr, "[CXWheelHID] physical wheel reader opened (nonexclusive)\n");
++}
+ 
+ @implementation WineApplicationController
+ 
+@@ -172,6 +304,17 @@
+         if (self != nil)
+         {
+             CFRunLoopSourceContext context = { 0 };
++
++            if (cx_hide_steam_dock())
++            {
++                if ([NSApp activationPolicy] == NSApplicationActivationPolicyRegular)
++                    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
++                fprintf(stderr, "[CXDock] keeping %s out of the Dock\n", getprogname());
++            }
++
++            if (getenv("CX_WHEEL_TRACE") && !strcmp(getenv("CX_WHEEL_TRACE"), "1"))
++                fprintf(stderr, "[CXWheelHID] process=%s input_monitoring=%d (0=granted)\n",
++                        getprogname(), IOHIDCheckAccess(kIOHIDRequestTypeListenEvent));
+             context.perform = PerformRequest;
+             requestSource = CFRunLoopSourceCreate(NULL, 0, &context);
+             if (!requestSource)
+@@ -294,6 +437,15 @@
+ 
+     - (void) transformProcessToForeground:(BOOL)activateIfTransformed
+     {
++        if (cx_hide_steam_dock())
++        {
++            if ([NSApp activationPolicy] == NSApplicationActivationPolicyRegular)
++                [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
++            if (activateIfTransformed)
++                [self tryToActivateIgnoringOtherApps:YES];
++            return;
++        }
++
+         if ([NSApp activationPolicy] != NSApplicationActivationPolicyRegular)
+         {
+             NSMenu* mainMenu;
+@@ -1737,6 +1889,28 @@
+         forceNextMouseMoveAbsolute = TRUE;
+     }
+ 
++    - (void) postRawWheelX:(int)x y:(int)y
++    {
++        WineWindow *window = mouseCaptureWindow;
++        NSPoint location = [NSEvent mouseLocation];
++        if (!window)
++            window = (WineWindow *)[NSApp windowWithWindowNumber:
++                [NSWindow windowNumberAtPoint:location belowWindowWithWindowNumber:0]];
++        if (![window isKindOfClass:[WineWindow class]]) return;
++        if (!mouseCaptureWindow && !NSMouseInRect(location, [window contentRectForFrameRect:window.frame], NO))
++            return;
++
++        CGPoint point = cgpoint_win_from_mac(NSPointToCGPoint([self flippedMouseLocation:location]));
++        macdrv_event *event = macdrv_create_event(MOUSE_SCROLL, window);
++        event->mouse_scroll.x = floor(point.x);
++        event->mouse_scroll.y = floor(point.y);
++        event->mouse_scroll.time_ms = [self ticksForEventTime:[NSProcessInfo processInfo].systemUptime];
++        event->mouse_scroll.x_scroll = x;
++        event->mouse_scroll.y_scroll = y;
++        [window.queue postEvent:event];
++        macdrv_release_event(event);
++    }
++
+     - (void) handleScrollWheel:(NSEvent*)theEvent
+     {
+         WineWindow* window;
+@@ -1778,16 +1952,27 @@
+                 event->mouse_scroll.y = floor(pt.y);
+                 event->mouse_scroll.time_ms = [self ticksForEventTime:[theEvent timestamp]];
+ 
+-                if (CGEventGetIntegerValueField(cgevent, kCGScrollWheelEventIsContinuous))
++                /* A physical HID wheel has already been delivered directly.
++                 * Drop its AppKit/Mos copy, including phase-less smoothing tails.
++                 * Gesture phases still identify native trackpad scrolling. */
++                if (macdrv_drop_native_wheel(cx_raw_wheel_devices ? CFSetGetCount(cx_raw_wheel_devices) : 0,
++                                             [theEvent phase], [theEvent momentumPhase]))
++                {
++
++                    macdrv_release_event(event);
++                    return;
++                }
++
++                if ([theEvent hasPreciseScrollingDeltas])
+                 {
+                     continuous = TRUE;
+ 
+                     /* Continuous scroll wheel events come from high-precision scrolling
+                        hardware like Apple's Magic Mouse, Mighty Mouse, and trackpads.
+-                       For these, we can get more precise data from the CGEvent API. */
++                       Use AppKit's scrolling-specific deltas to retain native processing. */
+                     /* Axis 1 is vertical, axis 2 is horizontal. */
+-                    x = CGEventGetDoubleValueField(cgevent, kCGScrollWheelEventPointDeltaAxis2);
+-                    y = CGEventGetDoubleValueField(cgevent, kCGScrollWheelEventPointDeltaAxis1);
++                    x = [theEvent scrollingDeltaX];
++                    y = [theEvent scrollingDeltaY];
+                 }
+                 else
+                 {
+@@ -1801,8 +1986,8 @@
+                         CFRelease(source);
+                     }
+ 
+-                    x = pixelsPerLine * [theEvent deltaX];
+-                    y = pixelsPerLine * [theEvent deltaY];
++                    x = pixelsPerLine * [theEvent scrollingDeltaX];
++                    y = pixelsPerLine * [theEvent scrollingDeltaY];
+                 }
+ 
+                 /* Mac: negative is right or down, positive is left or up.
+@@ -1818,8 +2003,24 @@
+ 
+                 if (use_precise_scrolling)
+                 {
+-                    event->mouse_scroll.x_scroll = x;
+-                    event->mouse_scroll.y_scroll = y;
++                    if (continuous)
++                    {
++                        if (window != lastPreciseScrollWindow ||
++                            [theEvent timestamp] - lastPreciseScrollTime > 1 ||
++                            ([theEvent phase] & NSEventPhaseBegan))
++                            preciseScrollRemainderX = preciseScrollRemainderY = 0;
++                        lastPreciseScrollTime = [theEvent timestamp];
++                        lastPreciseScrollWindow = window;
++                        event->mouse_scroll.x_scroll = macdrv_take_fraction(&preciseScrollRemainderX, x);
++                        event->mouse_scroll.y_scroll = macdrv_take_fraction(&preciseScrollRemainderY, y);
++                    }
++                    else
++                    {
++                        preciseScrollRemainderX = preciseScrollRemainderY = 0;
++                        lastPreciseScrollWindow = nil;
++                        event->mouse_scroll.x_scroll = x;
++                        event->mouse_scroll.y_scroll = y;
++                    }
+ 
+                     if (!continuous)
+                     {
+@@ -2432,6 +2633,7 @@
+      */
+     - (void)applicationDidBecomeActive:(NSNotification *)notification
+     {
++        cx_start_raw_wheel();
+         NSNumber* displayID;
+         NSDictionary* modesToRealize = [latentDisplayModes autorelease];
+ 
+@@ -2588,6 +2790,7 @@
+ 
+     - (void)applicationWillResignActive:(NSNotification *)notification
+     {
++        cx_stop_raw_wheel();
+         [self adjustWindowLevels:NO];
+     }
+ 
+--- /dev/null
++++ b/dlls/winemac.drv/cocoa_gcmouse.m
+@@ -0,0 +1,275 @@
++/*
++ * MACDRV GameController mouse support
++ *
++ * Copyright 2026 Elvin Hayatov
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#import <AppKit/AppKit.h>
++#import <GameController/GameController.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "macdrv_cocoa.h"
++#import "cocoa_app.h"
++#import "cocoa_event.h"
++#import "cocoa_window.h"
++#include "mouse_fraction.h"
++#include "cx_tuner_config.h"
++
++#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
++
++
++static NSMutableSet *configured_mice;
++static BOOL observing_mice;
++static bool gcmouse_active;
++static double remainder_x, remainder_y;
++static CFMachPortRef native_mouse_tap;
++static CFRunLoopSourceRef native_mouse_source;
++
++
++@interface WineApplicationController (GCMouseAccess)
++
++    - (WineWindow *) mouseCaptureWindow;
++
++@end
++
++
++@interface WineApplicationController (GCMouseNotifications)
++
++    - (void) gcmouseDidConnect:(NSNotification *)notification;
++    - (void) gcmouseDidDisconnect:(NSNotification *)notification;
++
++@end
++
++
++static void post_mouse_movement(double delta_x, double delta_y, double timestamp)
++{
++    WineApplicationController *controller;
++    WineWindow *window;
++    macdrv_event *event;
++
++    if (!macdrv_gcmouse_input_active() || !NSApp || ![NSApp isActive] || (!delta_x && !delta_y)) return;
++
++    controller = [WineApplicationController sharedController];
++    window = [controller mouseCaptureWindow] ?: [controller frontWineWindow];
++    if (!window) return;
++
++    int dx = macdrv_take_fraction(&remainder_x, delta_x);
++    int dy = macdrv_take_fraction(&remainder_y, delta_y);
++    if (!dx && !dy) return;
++
++    event = macdrv_create_event(MOUSE_MOVED_RAW, window);
++    event->mouse_moved.x = dx;
++    event->mouse_moved.y = dy;
++    event->mouse_moved.time_ms = [controller ticksForEventTime:timestamp];
++    [window.queue postEvent:event];
++    macdrv_release_event(event);
++}
++
++
++static CGEventRef native_mouse_callback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context)
++{
++    if (type == kCGEventTapDisabledByTimeout)
++    {
++        if (native_mouse_tap) CGEventTapEnable(native_mouse_tap, true);
++        return event;
++    }
++    if (type == kCGEventTapDisabledByUserInput)
++    {
++        __atomic_store_n(&gcmouse_active, false, __ATOMIC_SEQ_CST);
++        fprintf(stderr, "[CXMousePatch2] native tap suspended; using normal NSEvent input\n");
++        return event;
++    }
++    if (!event || !NSApp || ![NSApp isActive]) return event;
++
++    @autoreleasepool
++    {
++        NSEvent *native_event = [NSEvent eventWithCGEvent:event];
++        WineApplicationController *controller = [WineApplicationController sharedController];
++        double timestamp = [native_event timestamp];
++        double scale = retina_on ? 2 : 1;
++        if (!native_event || timestamp <= [controller lastSetCursorPositionTime]) return event;
++
++        /* Observe only events already addressed to this process. The Quartz
++         * event keeps the system's processed deltas, before AppKit's queue.
++         * No synthetic acceleration curve or temporal filter is applied. */
++        post_mouse_movement([native_event deltaX] * scale, [native_event deltaY] * scale, timestamp);
++    }
++    return event; /* listen-only: never suppress or alter the macOS event */
++}
++
++
++static bool start_native_mouse_input(void)
++{
++    CGEventMask mask = CGEventMaskBit(kCGEventMouseMoved) |
++                       CGEventMaskBit(kCGEventLeftMouseDragged) |
++                       CGEventMaskBit(kCGEventRightMouseDragged) |
++                       CGEventMaskBit(kCGEventOtherMouseDragged);
++    native_mouse_tap = CGEventTapCreateForPid(getpid(), kCGTailAppendEventTap,
++                        kCGEventTapOptionListenOnly, mask, native_mouse_callback, NULL);
++    if (!native_mouse_tap) return false;
++    native_mouse_source = CFMachPortCreateRunLoopSource(NULL, native_mouse_tap, 0);
++    if (!native_mouse_source)
++    {
++        CFMachPortInvalidate(native_mouse_tap);
++        CFRelease(native_mouse_tap);
++        native_mouse_tap = NULL;
++        return false;
++    }
++    CFRunLoopAddSource(CFRunLoopGetMain(), native_mouse_source, kCFRunLoopCommonModes);
++    CGEventTapEnable(native_mouse_tap, true);
++    __atomic_store_n(&gcmouse_active, true, __ATOMIC_SEQ_CST);
++    fprintf(stderr, "[CXMousePatch2] native macOS input enabled (own-process mouse-only event tap)\n");
++    return true;
++}
++
++
++static void configure_mouse(GCMouse *mouse)
++{
++    GCMouseInput *input;
++
++    if (!mouse || [configured_mice containsObject:mouse]) return;
++
++    if (!(input = [mouse mouseInput])) return;
++
++    [mouse setHandlerQueue:dispatch_get_main_queue()];
++    [input setMouseMovedHandler:^(GCMouseInput *input, float delta_x, float delta_y) {
++        post_mouse_movement(delta_x, -delta_y, [[NSProcessInfo processInfo] systemUptime]);
++    }];
++
++    [configured_mice addObject:mouse];
++    fprintf(stderr, "[CXMousePatch] GCMouse attached; devices=%lu\n", (unsigned long)[configured_mice count]);
++    __atomic_store_n(&gcmouse_active, true, __ATOMIC_SEQ_CST);
++}
++
++
++static void remove_mouse(GCMouse *mouse)
++{
++    if (!mouse || ![configured_mice containsObject:mouse]) return;
++
++    [[mouse mouseInput] setMouseMovedHandler:nil];
++    [configured_mice removeObject:mouse];
++    __atomic_store_n(&gcmouse_active, [configured_mice count] != 0, __ATOMIC_SEQ_CST);
++}
++
++
++static void stop_gcmouse_input(void)
++{
++    NSNotificationCenter *center;
++    WineApplicationController *controller;
++    GCMouse *mouse;
++
++    if (!observing_mice && !native_mouse_tap) return;
++
++    if (native_mouse_tap)
++    {
++        CFRunLoopRemoveSource(CFRunLoopGetMain(), native_mouse_source, kCFRunLoopCommonModes);
++        CFMachPortInvalidate(native_mouse_tap);
++        CFRelease(native_mouse_source);
++        CFRelease(native_mouse_tap);
++        native_mouse_source = NULL;
++        native_mouse_tap = NULL;
++        fprintf(stderr, "[CXMousePatch2] native macOS input stopped\n");
++    }
++
++    center = [NSNotificationCenter defaultCenter];
++    controller = [WineApplicationController sharedController];
++
++    [center removeObserver:controller name:GCMouseDidConnectNotification object:nil];
++    [center removeObserver:controller name:GCMouseDidDisconnectNotification object:nil];
++
++    for (mouse in configured_mice)
++        [[mouse mouseInput] setMouseMovedHandler:nil];
++
++    [configured_mice release];
++    configured_mice = nil;
++    observing_mice = FALSE;
++    fprintf(stderr, "[CXMousePatch] GCMouse stopped\n");
++    remainder_x = remainder_y = 0;
++    __atomic_store_n(&gcmouse_active, false, __ATOMIC_SEQ_CST);
++}
++
++
++static void start_gcmouse_input(void)
++{
++    NSNotificationCenter *center;
++    WineApplicationController *controller;
++    GCMouse *mouse;
++
++    struct cx_tuner_settings tuning = cx_tuner_read();
++    if (tuning.loaded && !tuning.mouse) { stop_gcmouse_input(); return; }
++    if (!use_gcmouse) return;
++    if (observing_mice || native_mouse_tap) return;
++
++    const char *mode = tuning.loaded ? "native" : getenv("CX_MOUSE_INPUT");
++    if (mode && !strcmp(mode, "native"))
++    {
++        if (start_native_mouse_input()) return;
++        fprintf(stderr, "[CXMousePatch2] native tap unavailable; falling back to GCMouse raw input\n");
++    }
++
++    if (@available(macOS 14.0, *))
++    {
++        if (!NSClassFromString(@"GCMouse")) return;
++
++        center = [NSNotificationCenter defaultCenter];
++        controller = [WineApplicationController sharedController];
++        configured_mice = [[NSMutableSet alloc] init];
++        observing_mice = TRUE;
++
++        [center addObserver:controller selector:@selector(gcmouseDidConnect:)
++                     name:GCMouseDidConnectNotification object:nil];
++        [center addObserver:controller selector:@selector(gcmouseDidDisconnect:)
++                     name:GCMouseDidDisconnectNotification object:nil];
++
++        for (mouse in [GCMouse mice])
++            configure_mouse(mouse);
++        fprintf(stderr, "[CXMousePatch] GCMouse enabled; devices=%lu\n", (unsigned long)[configured_mice count]);
++    }
++}
++
++
++@implementation WineApplicationController (GCMouseNotifications)
++
++    - (void) gcmouseDidConnect:(NSNotification *)notification
++    {
++        configure_mouse([notification object]);
++    }
++
++    - (void) gcmouseDidDisconnect:(NSNotification *)notification
++    {
++        remove_mouse([notification object]);
++    }
++
++@end
++
++
++void macdrv_set_gcmouse_input(bool enabled)
++{
++    OnMainThreadAsync(^{
++        if (enabled) start_gcmouse_input();
++        else stop_gcmouse_input();
++    });
++}
++
++
++bool macdrv_gcmouse_input_active(void)
++{
++    return __atomic_load_n(&gcmouse_active, __ATOMIC_SEQ_CST);
++}
+--- /dev/null
++++ b/dlls/winemac.drv/cx_tuner_config.h
+@@ -0,0 +1,44 @@
++/* Per-bottle tuning shared by the macOS Wine driver components. */
++#ifndef CX_TUNER_CONFIG_H
++#define CX_TUNER_CONFIG_H
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++struct cx_tuner_settings { int loaded, mouse, wheel, sync, drawables, queue; };
++static struct cx_tuner_settings cx_tuner_read(void)
++{
++    struct cx_tuner_settings result = {0, -1, -1, -2, -1, -1};
++    const char *prefix = getenv("WINEPREFIX"), *process = getprogname();
++    char path[4096], line[512], section[256] = "";
++    FILE *file;
++    if (!prefix || snprintf(path, sizeof(path), "%s/drive_c/.cx-tuner.ini", prefix) >= sizeof(path)) return result;
++    if (!(file = fopen(path, "r"))) return result;
++    result.loaded = 1; result.mouse = result.wheel = 1;
++    result.sync = -1; result.drawables = result.queue = 0;
++    /* Two passes make application overrides independent of section order. */
++    for (int pass = 0; pass < 2; ++pass)
++    {
++        rewind(file); section[0] = 0;
++        while (fgets(line, sizeof(line), file))
++        {
++            char key[64], *end; int value;
++            if (line[0] == '[') { if (sscanf(line, "[%255[^]]]", section) != 1) section[0] = 0; continue; }
++            if ((pass == 0 && strcasecmp(section, "global")) ||
++                (pass == 1 && (!process || strcasecmp(section, process)))) continue;
++            if (sscanf(line, " %63[^=]=%d", key, &value) != 2) continue;
++            end = key + strlen(key); while (end > key && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
++            if (!strcmp(key, "mouse") && (value == 0 || value == 1)) result.mouse = value;
++            if (!strcmp(key, "wheel") && (value == 0 || value == 1)) result.wheel = value;
++            if (!strcmp(key, "sync") && value >= -1 && value <= 1) result.sync = value;
++            if (!strcmp(key, "drawables") && (value == 0 || value == 2 || value == 3)) result.drawables = value;
++            if (!strcmp(key, "queue") && value >= 0 && value <= 16) result.queue = value;
++        }
++    }
++    fclose(file);
++    /* Native Sevoflurane owns Steam's UI; game defaults never tune its CEF. */
++    if (process && (!strcasecmp(process, "steam.exe") || !strcasecmp(process, "steamwebhelper.exe") || !strcasecmp(process, "steamservice.exe")))
++        { result.sync = -1; result.drawables = result.queue = 0; }
++    return result;
++}
++#endif
+--- a/dlls/winemac.drv/d3dmetal_objc.m
++++ b/dlls/winemac.drv/d3dmetal_objc.m
+@@ -25,23 +25,96 @@
+ #import <AppKit/AppKit.h>
+ #import <QuartzCore/QuartzCore.h>
+ #import <objc/runtime.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ #include "macdrv_cocoa.h"
+ #import "cocoa_app.h"
+ #import "cocoa_event.h"
+ #import "cocoa_window.h"
+ #import "d3dmetal_objc.h"
++#include "cx_tuner_config.h"
+ 
+ #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+ 
+ 
++/* Opt-in display synchronization and drawable count, scoped to the selected
++ * process. Game quality and frame-rate settings remain application controlled. */
++static pthread_once_t cx_frame_options_once = PTHREAD_ONCE_INIT;
++static BOOL cx_force_display_sync;
++static int cx_display_sync_mode = -1;
++static NSUInteger cx_drawable_limit;
++
++static void cx_init_frame_options(void)
++{
++    struct cx_tuner_settings tuning = cx_tuner_read();
++    if (tuning.loaded)
++    {
++        cx_display_sync_mode = tuning.sync;
++        cx_force_display_sync = tuning.sync == 1;
++        cx_drawable_limit = tuning.drawables;
++        return;
++    }
++    const char *sync = getenv("CX_METAL_DISPLAY_SYNC");
++    const char *target = getenv("CX_METAL_PROCESS");
++    const char *process = getprogname();
++    const char *drawables = getenv("CX_METAL_MAX_DRAWABLES");
++    BOOL matches = !target || !*target || (process && !strcasecmp(process, target));
++    char option[8], path[4096];
++    const char *prefix = getenv("WINEPREFIX");
++    FILE *file;
++
++    /* Steam children inherit the client's old environment. Read a per-bottle
++     * override once at game startup so changing this option needs no Steam login. */
++    if (matches && prefix && snprintf(path, sizeof(path), "%s/drive_c/.cx-metal-drawables", prefix) < sizeof(path) &&
++        (file = fopen(path, "r")))
++    {
++        if (fgets(option, sizeof(option), file) &&
++            (!strcmp(option, "2") || !strcmp(option, "2\n") ||
++             !strcmp(option, "3") || !strcmp(option, "3\n")))
++            drawables = option;
++        fclose(file);
++    }
++    cx_force_display_sync = sync && !strcmp(sync, "1");
++    if (!matches) cx_force_display_sync = NO;
++    if (cx_force_display_sync) cx_display_sync_mode = 1;
++    if (matches && drawables && (!strcmp(drawables, "2") || !strcmp(drawables, "2\n"))) cx_drawable_limit = 2;
++
++}
++
+ @implementation WineMetalLayer
++
++    - (void)setDisplaySyncEnabled:(BOOL)enabled
++    {
++        pthread_once(&cx_frame_options_once, cx_init_frame_options);
++        [super setDisplaySyncEnabled:cx_display_sync_mode < 0 ? enabled : cx_display_sync_mode != 0];
++    }
++
++    - (void)setMaximumDrawableCount:(NSUInteger)count
++    {
++        pthread_once(&cx_frame_options_once, cx_init_frame_options);
++        [super setMaximumDrawableCount:cx_drawable_limit ? cx_drawable_limit : count];
++    }
++
+ 
+     /* Extend [CAMetalLayer nextDrawable] so client_surface_present() can be
+      * called for the corresponding client_surface.
+      */
+     - (id<CAMetalDrawable>) nextDrawable
+     {
++        pthread_once(&cx_frame_options_once, cx_init_frame_options);
++        if (cx_display_sync_mode >= 0 && self.displaySyncEnabled != (cx_display_sync_mode != 0))
++            [self setDisplaySyncEnabled:cx_display_sync_mode != 0];
++        if (cx_drawable_limit && self.maximumDrawableCount != cx_drawable_limit)
++            [self setMaximumDrawableCount:cx_drawable_limit];
++        static BOOL cx_reported;
++        if (!cx_reported && getenv("CX_TUNER_DIAG"))
++        {
++            fprintf(stderr, "[CXTuner] Metal sync=%d drawables=%lu\n", (int)self.displaySyncEnabled, (unsigned long)self.maximumDrawableCount);
++            cx_reported = YES;
++        }
+         /* CAMetalLayer's delegate is the WineMetalView that contains it (seems like that's always true
+          * for an NSView backing layer).
+          * That WineMetalView's parent is the client_surface->cocoa_view WineContentView, it has the
+--- a/dlls/winemac.drv/event.c
++++ b/dlls/winemac.drv/event.c
+@@ -58,6 +58,7 @@
+         "MOUSE_BUTTON",
+         "MOUSE_MOVED_RELATIVE",
+         "MOUSE_MOVED_ABSOLUTE",
++        "MOUSE_MOVED_RAW",
+         "MOUSE_SCROLL",
+         "QUERY_EVENT",
+         "QUERY_EVENT_NO_PREEMPT_WAIT",
+@@ -117,6 +118,7 @@
+     {
+         event_mask |= event_mask_for_type(MOUSE_MOVED_RELATIVE);
+         event_mask |= event_mask_for_type(MOUSE_MOVED_ABSOLUTE);
++        event_mask |= event_mask_for_type(MOUSE_MOVED_RAW);
+     }
+ 
+     if (mask & QS_POSTMESSAGE)
+@@ -430,6 +432,7 @@
+         break;
+     case MOUSE_MOVED_RELATIVE:
+     case MOUSE_MOVED_ABSOLUTE:
++    case MOUSE_MOVED_RAW:
+         macdrv_mouse_moved(hwnd, event);
+         break;
+     case MOUSE_SCROLL:
+--- a/dlls/winemac.drv/gdi.c
++++ b/dlls/winemac.drv/gdi.c
+@@ -228,6 +228,12 @@
+ 
+     pthread_mutex_unlock(&device_data_mutex);
+     return ret;
++}
++
++
++static void set_raw_input_mouse(BOOL enabled)
++{
++    macdrv_set_gcmouse_input(enabled);
+ }
+ 
+ 
+@@ -263,6 +269,7 @@
+     .pSetCapture = macdrv_SetCapture,
+     .pSetCursor = macdrv_SetCursor,
+     .pSetCursorPos = macdrv_SetCursorPos,
++    .pSetRawInputMouse = set_raw_input_mouse,
+     .pSetDesktopWindow = macdrv_SetDesktopWindow,
+     .pActivateWindow = macdrv_ActivateWindow,
+     .pSetLayeredWindowAttributes = macdrv_SetLayeredWindowAttributes,
+--- a/dlls/winemac.drv/macdrv_cocoa.h
++++ b/dlls/winemac.drv/macdrv_cocoa.h
+@@ -141,6 +141,7 @@
+ extern bool use_confinement_cursor_clipping;
+ extern bool cursor_clipping_locks_windows;
+ extern bool use_precise_scrolling;
++extern bool use_gcmouse;
+ extern int gl_surface_mode;
+ extern CFDictionaryRef localized_strings;
+ extern bool retina_enabled;  /* Whether Retina mode is enabled via registry setting. */
+@@ -305,6 +306,7 @@
+     MOUSE_BUTTON,
+     MOUSE_MOVED_RELATIVE,
+     MOUSE_MOVED_ABSOLUTE,
++    MOUSE_MOVED_RAW,
+     MOUSE_SCROLL,
+     QUERY_EVENT,
+     QUERY_EVENT_NO_PREEMPT_WAIT,
+@@ -496,6 +498,8 @@
+ extern int macdrv_register_hot_key(macdrv_event_queue q, unsigned int vkey, unsigned int mod_flags,
+                                    unsigned int keycode, unsigned int modifiers);
+ extern void macdrv_unregister_hot_key(macdrv_event_queue q, unsigned int vkey, unsigned int mod_flags);
++extern void macdrv_set_gcmouse_input(bool enabled);
++extern bool macdrv_gcmouse_input_active(void);
+ 
+ 
+ /* window */
+--- a/dlls/winemac.drv/macdrv_main.c
++++ b/dlls/winemac.drv/macdrv_main.c
+@@ -57,6 +57,7 @@
+ bool use_confinement_cursor_clipping = true;
+ bool cursor_clipping_locks_windows = true;
+ bool use_precise_scrolling = true;
++bool use_gcmouse = true;
+ int gl_surface_mode = GL_SURFACE_IN_FRONT_OPAQUE;
+ bool retina_enabled = false;
+ bool enable_app_nap = false;
+@@ -373,6 +374,9 @@
+ 
+     if (!get_config_key(hkey, appkey, "UsePreciseScrolling", buffer, sizeof(buffer)))
+         use_precise_scrolling = IS_OPTION_TRUE(buffer[0]);
++
++    if (!get_config_key(hkey, appkey, "UseGCMouse", buffer, sizeof(buffer)))
++        use_gcmouse = IS_OPTION_TRUE(buffer[0]);
+ 
+     if (!get_config_key(hkey, appkey, "OpenGLSurfaceMode", buffer, sizeof(buffer)))
+     {
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -158,7 +158,11 @@
+     input.mi.time           = time;
+     input.mi.dwExtraInfo    = 0;
+ 
+-    NtUserSendHardwareInput(top_level_hwnd, 0, &input, 0);
++    /* Keep accelerated legacy cursor events, but suppress their raw motion
++     * while GCMouse supplies the independent raw stream. Button/wheel raw
++     * events are retained by the paired server. */
++    NtUserSendHardwareInput(top_level_hwnd,
++                           macdrv_gcmouse_input_active() ? SEND_HWMSG_CX_NORAWMOVE : 0, &input, 0);
+ }
+ 
+ 
+@@ -899,11 +903,28 @@
+ /***********************************************************************
+  *              macdrv_mouse_moved
+  *
+- * Handler for MOUSE_MOVED_RELATIVE and MOUSE_MOVED_ABSOLUTE events.
++ * Handler for mouse movement events.
+  */
+ void macdrv_mouse_moved(HWND hwnd, const macdrv_event *event)
+ {
+     UINT flags = MOUSEEVENTF_MOVE;
++
++    if (event->type == MOUSE_MOVED_RAW)
++    {
++        INPUT input = { .type = INPUT_MOUSE };
++
++        input.mi.dx = event->mouse_moved.x;
++        input.mi.dy = event->mouse_moved.y;
++        input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE;
++        input.mi.time = event->mouse_moved.time_ms;
++
++        TRACE("win %p/%p raw (%d,%d) time %lu (%lu ticks ago)\n", hwnd, event->window,
++              event->mouse_moved.x, event->mouse_moved.y, event->mouse_moved.time_ms,
++              (NtGetTickCount() - event->mouse_moved.time_ms));
++
++        NtUserSendHardwareInput(hwnd, SEND_HWMSG_CX_RAWMOUSE, &input, 0);
++        return;
++    }
+ 
+     TRACE("win %p/%p %s (%d,%d) drag %d time %lu (%lu ticks ago)\n", hwnd, event->window,
+           (event->type == MOUSE_MOVED_RELATIVE) ? "relative" : "absolute",
+--- /dev/null
++++ b/dlls/winemac.drv/mouse_fraction.h
+@@ -0,0 +1,16 @@
++/* Fractional motion preservation for the local CX mouse-input backport.
++ * Distributed under the GNU LGPL, version 2.1 or later, like winemac.drv.
++ */
++#ifndef MACDRV_MOUSE_FRACTION_H
++#define MACDRV_MOUSE_FRACTION_H
++
++static inline int macdrv_take_fraction(double *remainder, double delta)
++{
++    int whole;
++    *remainder += delta;
++    whole = (int)*remainder;
++    *remainder -= whole;
++    return whole;
++}
++
++#endif
+--- /dev/null
++++ b/dlls/winemac.drv/wheel_raw.h
+@@ -0,0 +1,20 @@
++/* Local physical wheel translation; LGPL-2.1-or-later, like winemac.drv. */
++#ifndef MACDRV_WHEEL_RAW_H
++#define MACDRV_WHEEL_RAW_H
++#include <stdbool.h>
++#include <stdint.h>
++static inline bool macdrv_hid_wheel_delta(unsigned int page, unsigned int usage,
++                                         bool relative, int64_t value, int *x, int *y)
++{
++    *x = *y = 0;
++    if (!relative) return false;
++    if (page == 1 && usage == 0x38) *y = value * 120;
++    else if (page == 0x0c && usage == 0x238) *x = value * 120;
++    else return false;
++    return true;
++}
++static inline bool macdrv_drop_native_wheel(unsigned int devices, unsigned int phase, unsigned int momentum)
++{
++    return devices && !phase && !momentum;
++}
++#endif
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -218,7 +218,7 @@
+ };
+ 
+ /* increment this when you change the DC function table */
+-#define WINE_GDI_DRIVER_VERSION 108
++#define WINE_GDI_DRIVER_VERSION 109
+ 
+ #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
+ #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
+@@ -387,6 +387,7 @@
+     BOOL    (*pGetCursorPos)(LPPOINT);
+     BOOL    (*pSetCursorPos)(INT,INT);
+     BOOL    (*pClipCursor)(const RECT*,BOOL);
++    void    (*pSetRawInputMouse)(BOOL);
+     /* notify icon functions */
+     LRESULT (*pNotifyIcon)(HWND,UINT,NOTIFYICONDATAW *);
+     void    (*pCleanupIcons)(HWND);
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -3125,6 +3125,9 @@
+     char __pad_28[4];
+ };
+ #define SEND_HWMSG_INJECTED    0x01
++/* CX 26.3 GCMouse backport: no request layout changes. */
++#define SEND_HWMSG_CX_RAWMOUSE 0x02
++#define SEND_HWMSG_CX_NORAWMOVE 0x04
+ 
+ 
+ 
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2386,6 +2386,9 @@
+     int             new_y;
+ @END
+ #define SEND_HWMSG_INJECTED    0x01
++/* CX 26.3 GCMouse backport: no request layout changes. */
++#define SEND_HWMSG_CX_RAWMOUSE 0x02
++#define SEND_HWMSG_CX_NORAWMOVE 0x04
+ 
+ 
+ /* Get a message from the current queue */
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2213,7 +2213,7 @@
+ 
+ /* queue a hardware message for a mouse event */
+ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
+-                                unsigned int origin, struct msg_queue *sender )
++                                unsigned int origin, struct msg_queue *sender, unsigned int send_flags )
+ {
+     desktop_shm_t *desktop_shm = desktop->shared;
+     struct hardware_msg_data *msg_data;
+@@ -2242,6 +2242,27 @@
+         WM_MOUSEHWHEEL   /* 0x1000 = MOUSEEVENTF_HWHEEL */
+     };
+ 
++    /* GCMouse deltas must bypass desktop cursor scaling, clipping and
++     * legacy-message generation. The request is a hardware mouse event. */
++    if (send_flags & SEND_HWMSG_CX_RAWMOUSE)
++    {
++        if ((foreground = get_foreground_thread( desktop, win )))
++        {
++            memset( &raw_msg, 0, sizeof(raw_msg) );
++            raw_msg.foreground = foreground;
++            raw_msg.source = source;
++            raw_msg.time = input->mouse.time ? input->mouse.time : time;
++            raw_msg.message = WM_INPUT;
++            raw_msg.flags = input->mouse.flags;
++            rawmouse_init( &raw_msg.rawinput, &raw_msg.data.mouse,
++                           input->mouse.x, input->mouse.y, raw_msg.flags,
++                           input->mouse.data, input->mouse.info );
++            dispatch_rawinput_message( desktop, &raw_msg );
++            release_object( foreground );
++        }
++        return 0;
++    }
++
+     SHARED_WRITE_BEGIN( desktop_shm, desktop_shm_t )
+     {
+         shared->cursor.last_change = time;
+@@ -2281,10 +2302,13 @@
+         raw_msg.time       = time;
+         raw_msg.message    = WM_INPUT;
+         raw_msg.flags      = flags;
+-        rawmouse_init( &raw_msg.rawinput, &raw_msg.data.mouse, x - desktop_shm->cursor.x, y - desktop_shm->cursor.y,
++        if (send_flags & SEND_HWMSG_CX_NORAWMOVE) raw_msg.flags &= ~MOUSEEVENTF_MOVE;
++        rawmouse_init( &raw_msg.rawinput, &raw_msg.data.mouse,
++                       (send_flags & SEND_HWMSG_CX_NORAWMOVE) ? 0 : x - desktop_shm->cursor.x,
++                       (send_flags & SEND_HWMSG_CX_NORAWMOVE) ? 0 : y - desktop_shm->cursor.y,
+                        raw_msg.flags, input->mouse.data, input->mouse.info );
+ 
+-        dispatch_rawinput_message( desktop, &raw_msg );
++        if (raw_msg.flags) dispatch_rawinput_message( desktop, &raw_msg );
+         release_object( foreground );
+     }
+ 
+@@ -3260,7 +3284,7 @@
+     switch (req->input.type)
+     {
+     case INPUT_MOUSE:
+-        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender );
++        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender, req->flags );
+         break;
+     case INPUT_KEYBOARD:
+         wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );

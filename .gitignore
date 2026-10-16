@@ -1,0 +1,28 @@
+# Build products and local runtime data
+/build/
+/.build/
+/vendor/
+/work/
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.lib
+*.app/
+*.log
+.DS_Store
+.env
+.env.*
+*.p12
+*.pfx
+*.mobileprovision
+# Never commit personal bottle/configuration/credentials
+/Bottles/
+/CustomRuntimes/
+/local/
+manifest.local.json
+__pycache__/
+*.py[cod]

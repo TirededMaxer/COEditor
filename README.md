@@ -6,7 +6,7 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 
 ## 下载与安装
 
-在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.4.1-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
+在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.4.2-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
 
 **当前 DMG 是管理工具，需要已经准备好的本地补丁引擎与 Steam 容器；它不会自动下载安装 CrossOver 或替你完成 Wine 构建。** 从 1.3 升级时，限帧、提交节奏和呈现统计还需要更新匹配的 Wine 驱动与本地维护清单；仅替换应用不会给旧驱动增加这些功能。 首次从源码建立补丁环境，请阅读 [构建与集成](docs/BUILDING.md)。本仓库不分发 CrossOver 商业运行时、Steam 客户端、游戏或账号数据。
 
@@ -32,7 +32,7 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 
 1. 选择“通用”设置默认值，或通过“添加游戏…”选择 Steam 容器中已经安装的游戏与启动程序。
 2. 按需逐项调整；参数不会自动组合，也不会因原来选过预设而锁定。
-3. 点击“保存设置”，完全退出并重启对应游戏。游戏运行期间修改配置，不会立即改变本次运行的参数。
+3. 点击“保存设置”，完全退出并重启对应游戏。游戏运行期间修改配置，不会立即改变本次运行的参数；正常修改不需要重启 Steam 或 Sevoflurane。
 4. 开启“实际呈现帧时间统计”并重启游戏后，点击“查看统计…”查看对应游戏的呈现数据。
 
 | 参数 | 可调范围 | 含义 |
@@ -47,6 +47,12 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 队列与缓冲调低可能减少排队延迟，也可能增加等待、影响帧率或稳定性；调高提供更多周转余量，实际积压时可能增加延迟。其他限帧和提交控制也会影响队列是否排满。建议固定其他设置，每次只改一个参数再比较。统计描述呈现节奏，不等于输入到显示的总延迟。
 
 Metal 设置适用于补丁中的 D3DMetal 路径；不会自动改变 DXVK / DXMT 的呈现行为。队列代理仅支持已注册的 x86-64 D3D11 程序，保留原始 D3DMetal DLL 并转发其三个设备创建导出。Steam 客户端相关进程跳过游戏画面覆盖。
+
+## 滚轮在更新后失效
+
+若实体鼠标一格切换多次，先确认“滚轮刻度优化”已开启并保存。若日志出现 `Input Monitoring permission required; native wheel unchanged`，表示原始 HID 读取被系统拒绝，程序已回退到原生滚动；这并非参数未保存。
+
+Sevoflurane / 后台程序更新后，ad-hoc 签名可能改变，原有“输入监控”开关即使显示开启，旧授权也可能不再有效。在系统设置的“隐私与安全性 → 输入监控”中刷新当前 Sevoflurane 和 SevofluraneDaemon 的授权；仍无效时移除旧条目，再添加当前应用及其 `Contents/Library/LaunchAgents/SevofluraneDaemon`，按系统提示重启。这属于启动入口更新后的系统授权恢复；普通参数修改仍只需重启游戏。COEditor 不会修改 TCC 数据库，也不会替其他应用绕过系统授权。
 
 ## 云端构建与发布
 

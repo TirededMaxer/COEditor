@@ -3,7 +3,7 @@ import SwiftUI
 import CryptoKit
 import UniformTypeIdentifiers
 
-struct TuningFile {
+struct TuningFile: Equatable {
     var sections: [String: [String: Int]] = [:]
     init(_ text: String = "") {
         var section = "global"
@@ -217,7 +217,6 @@ final class TunerModel: ObservableObject {
     @Published var message = ""
     @Published var healthy = true
     @Published var environment = ""
-    @Published var inheritedInput = true
     @Published var busy = false
     @Published var games:[InstalledSteamGame] = []
     @Published var bindings:[String:GameBinding] = [:]
@@ -225,7 +224,24 @@ final class TunerModel: ObservableObject {
     @Published var showGamePicker = false
     @Published var showFrameStats = false
     @Published var supportsFrameControl = false
-    init() { reload();check();refreshGames() }
+    private var savedFile = TuningFile.initial
+    init(loadEnvironment:Bool = true) { if loadEnvironment { reload();check();refreshGames() } }
+    var hasUnsavedChanges:Bool { file != savedFile }
+    var inheritsInput:Bool { file.sections[selected]?["mouse"] == nil && file.sections[selected]?["wheel"] == nil }
+    private func edited() { message = hasUnsavedChanges ? "有未保存的修改" : "" }
+    func acceptSaved(_ saved:TuningFile) { file=saved;savedFile=saved;message="" }
+    func setInputInheritance(_ inherit:Bool) {
+        guard !isGlobal,inherit != inheritsInput else { return }
+        if inherit {
+            file.sections[selected]?.removeValue(forKey:"mouse")
+            file.sections[selected]?.removeValue(forKey:"wheel")
+        } else {
+            let mouse=get("mouse"),wheel=get("wheel")
+            file.sections[selected,default:[:]]["mouse"]=mouse
+            file.sections[selected,default:[:]]["wheel"]=wheel
+        }
+        edited()
+    }
     var scopes: [String] { ["global"] + file.sections.keys.filter{$0 != "global"}.sorted() }
     var isGlobal: Bool { selected == "global" }
     func label(_ section: String) -> String {
@@ -254,14 +270,21 @@ final class TunerModel: ObservableObject {
         }
     }
     func get(_ key: String) -> Int { file.value(key,in:selected) }
-    func set(_ key: String,_ value: Int) { file.sections[selected,default:[:]][key] = value;message = "有未保存的修改" }
+    func set(_ key: String,_ value: Int) {
+        guard get(key) != value else { return }
+        // Restore an inherited field's original absence when an edit is undone.
+        if key != "mouse" && key != "wheel" && savedFile.sections[selected]?[key] == nil && savedFile.value(key,in:selected) == value {
+            file.sections[selected]?.removeValue(forKey:key)
+        } else { file.sections[selected,default:[:]][key] = value }
+        edited()
+    }
     func binding(_ key: String) -> Binding<Bool> { Binding(get:{self.get(key) != 0},set:{self.set(key,$0 ? 1 : 0)}) }
     func reload() {
-        do { if Storage.fm.fileExists(atPath:Storage.ini.path) { file = TuningFile(try String(contentsOf:Storage.ini,encoding:.utf8));try file.validate() };message="已读取保存的设置" }
+        do { let loaded = Storage.fm.fileExists(atPath:Storage.ini.path) ? TuningFile(try String(contentsOf:Storage.ini,encoding:.utf8)) : .initial;try loaded.validate();acceptSaved(loaded);message="已读取保存的设置" }
         catch { message=error.localizedDescription }
         if file.sections[selected] == nil { selected="global" }
     }
-    @discardableResult func save() -> Bool { do { try Storage.save(file);message="已保存，重启对应游戏后生效";return true } catch {message="保存失败："+error.localizedDescription;return false} }
+    @discardableResult func save() -> Bool { do { try Storage.save(file);savedFile=file;message="已保存，重启对应游戏后生效";return true } catch {message="保存失败："+error.localizedDescription;return false} }
     func check() { supportsFrameControl = (try? Storage.manifest().frameControlVersion) == 1;let r=Storage.maintain(repair:true);healthy=r.ok;environment="补丁引擎 \(r.runtime) · CrossOver \(r.installedCrossOver)\n"+r.notes.joined(separator:"\n") }
     func addGame(_ game:InstalledSteamGame,exe:GameExecutable) {
         let name=exe.profile
@@ -316,7 +339,7 @@ extension NumberFormatter {
 struct ContentHeightKey:PreferenceKey {static var defaultValue:CGFloat=650;static func reduce(value:inout CGFloat,nextValue:()->CGFloat){value=nextValue()}}
 struct NumberControl: View {
     var label:String;var value:Int;var bounds:ClosedRange<Double>;var enabled:Bool;var placeholder:String="默认";var change:(Int)->Void
-    var body:some View {HStack {Text(label).frame(width:135,alignment:.leading);Slider(value:Binding(get:{Double(min(Int(bounds.upperBound),max(Int(bounds.lowerBound),value)))},set:{change(Int($0.rounded()))}),in:bounds,step:1).disabled(!enabled);Text(enabled ? "\(value)" : placeholder).monospacedDigit().frame(width:42,alignment:.trailing)}}
+    var body:some View {HStack {Text(label).frame(width:135,alignment:.leading);Slider(value:Binding(get:{Double(min(Int(bounds.upperBound),max(Int(bounds.lowerBound),value)))},set:{if enabled {change(Int($0.rounded()))}}),in:bounds,step:1).disabled(!enabled);Text(enabled ? "\(value)" : placeholder).monospacedDigit().frame(width:42,alignment:.trailing)}}
 }
 struct TunerView:View {
     @ObservedObject var model:TunerModel
@@ -332,7 +355,7 @@ struct TunerView:View {
                     VStack(alignment:.leading,spacing:10) {
                     HStack {Text("显示同步").frame(width:135,alignment:.leading);Picker("显示同步",selection:Binding(get:{model.get("sync")},set:{model.set("sync",$0)})){Text("跟随游戏").tag(-1);Text("强制开启").tag(1);Text("强制关闭").tag(0)}.labelsHidden()}
                     Toggle("缓冲数量跟随游戏",isOn:Binding(get:{model.get("drawables")==0},set:{model.set("drawables",$0 ? 0 : 3)}))
-                    HStack {Text("Metal 缓冲数量").frame(width:135,alignment:.leading);Picker("Metal 缓冲数量",selection:Binding(get:{max(2,model.get("drawables"))},set:{model.set("drawables",$0)})){Text("2").tag(2);Text("3").tag(3)}.pickerStyle(.segmented).labelsHidden().disabled(model.get("drawables")==0)}
+                    HStack {Text("Metal 缓冲数量").frame(width:135,alignment:.leading);Picker("Metal 缓冲数量",selection:Binding(get:{max(2,model.get("drawables"))},set:{if model.get("drawables") != 0 {model.set("drawables",$0)}})){Text("2").tag(2);Text("3").tag(3)}.pickerStyle(.segmented).labelsHidden().disabled(model.get("drawables")==0)}
                     Toggle("队列长度跟随游戏",isOn:Binding(get:{model.get("queue")==0},set:{model.set("queue",$0 ? 0 : 2)})).disabled(!model.supportsQueue)
                     NumberControl(label:"D3D11 队列上限",value:model.get("queue"),bounds:1...16,enabled:model.get("queue") != 0 && model.supportsQueue,placeholder:model.supportsQueue ? "默认":"未适配"){model.set("queue",$0)}
                     }
@@ -345,8 +368,8 @@ struct TunerView:View {
                     Toggle("按游戏限帧",isOn:Binding(get:{model.get("fps") != 0},set:{model.set("fps",$0 ? 120:0)}))
                     HStack {
                         Text("帧率上限").frame(width:135,alignment:.leading)
-                        TextField("FPS",value:Binding(get:{max(1,model.get("fps"))},set:{model.set("fps",min(1000,max(1,$0)))}),formatter:NumberFormatter.coeditorInteger).frame(width:75)
-                        Stepper("",value:Binding(get:{max(1,model.get("fps"))},set:{model.set("fps",$0)}),in:1...1000).labelsHidden()
+                        TextField("FPS",value:Binding(get:{max(1,model.get("fps"))},set:{if model.get("fps") != 0 {model.set("fps",min(1000,max(1,$0)))}}),formatter:NumberFormatter.coeditorInteger).frame(width:75)
+                        Stepper("",value:Binding(get:{max(1,model.get("fps"))},set:{if model.get("fps") != 0 {model.set("fps",$0)}}),in:1...1000).labelsHidden()
                         Text("FPS").foregroundStyle(.secondary);Spacer()
                     }.disabled(model.get("fps")==0)
                     HStack {Text("提交节奏").frame(width:135,alignment:.leading);Picker("提交节奏",selection:Binding(get:{model.get("pacing")},set:{model.set("pacing",$0)})){Text("关闭").tag(0);Text("均衡").tag(1);Text("低延迟").tag(2)}.labelsHidden()}
@@ -360,10 +383,7 @@ struct TunerView:View {
             GroupBox("输入") {
                 VStack(alignment:.leading,spacing:10) {
                     if !model.isGlobal {
-                        Toggle("沿用通用输入设置",isOn:Binding(get:{model.file.sections[model.selected]?["mouse"] == nil && model.file.sections[model.selected]?["wheel"] == nil},set:{ inherit in
-                            if inherit {model.file.sections[model.selected]?.removeValue(forKey:"mouse");model.file.sections[model.selected]?.removeValue(forKey:"wheel")}
-                            else {model.set("mouse",model.get("mouse"));model.set("wheel",model.get("wheel"))};model.message="有未保存的修改"
-                        }))
+                        Toggle("沿用通用输入设置",isOn:Binding(get:{model.inheritsInput},set:{model.setInputInheritance($0)}))
                     }
                     Toggle("鼠标移动优化",isOn:model.binding("mouse")).disabled(!model.isGlobal && model.file.sections[model.selected]?["mouse"] == nil)
                     Text("保留已验收的 macOS 原生处理手感；关闭后使用原引擎输入。").font(.caption).foregroundStyle(.secondary)
@@ -420,6 +440,31 @@ func runTests() throws {
     try controls.validate()
     try expect(controls.value("fps",in:"cs2.exe")==90 && controls.value("pacing",in:"cs2.exe")==2,"新参数继承失败")
     try expect(TuningFile().value("fps",in:"global")==0 && TuningFile().value("pacing",in:"global")==0,"旧配置必须默认关闭新功能")
+    // No disk access or maintenance in model regressions: the fixture is the saved baseline.
+    let draft=TunerModel(loadEnvironment:false)
+    draft.acceptSaved(legacy);draft.selected="cs2.exe"
+    try expect(!draft.hasUnsavedChanges && draft.message.isEmpty,"打开应用不得显示未保存")
+    for key in ["mouse","wheel","sync","drawables","queue","fps","pacing","stats"] {draft.set(key,draft.get(key))}
+    try expect(!draft.hasUnsavedChanges && draft.message.isEmpty && draft.file==legacy,"控件回写相同数值不得创建覆盖或显示未保存")
+    draft.selected="global";draft.selected="cs2.exe"
+    try expect(!draft.hasUnsavedChanges,"切换游戏不应修改配置")
+    draft.set("queue",5)
+    try expect(draft.hasUnsavedChanges && draft.message=="有未保存的修改","实际编辑必须显示未保存")
+    draft.set("queue",16)
+    try expect(!draft.hasUnsavedChanges && draft.message.isEmpty,"改回保存值应清除未保存提示")
+    draft.set("sync",0);draft.set("sync",1)
+    try expect(!draft.hasUnsavedChanges && draft.inheritsInput,"撤销编辑应保留输入继承")
+    draft.setInputInheritance(false)
+    try expect(draft.hasUnsavedChanges && !draft.inheritsInput && draft.file.sections["cs2.exe"]?["wheel"]==1,"关闭继承必须写入明确的输入覆盖")
+    draft.set("wheel",0);draft.set("wheel",1)
+    try expect(!draft.inheritsInput && draft.file.sections["cs2.exe"]?["wheel"]==1,"独立输入编辑改回原值不得意外恢复单个键的继承")
+    draft.setInputInheritance(true)
+    try expect(!draft.hasUnsavedChanges && draft.message.isEmpty,"恢复原有继承应清除未保存提示")
+    draft.set("fps",144);let saved=draft.file;draft.acceptSaved(saved)
+    try expect(!draft.hasUnsavedChanges,"保存成功应更新比较基线")
+    draft.set("fps",120);draft.acceptSaved(saved)
+    try expect(!draft.hasUnsavedChanges && draft.get("fps")==144,"重新读取应丢弃草稿并更新基线")
+    print("PASS: clean startup, no-op control callbacks, scope switching, edit/revert, input inheritance and saved baselines")
     print("PASS: legacy preset metadata removal, unchanged runtime values, independent manual edits and neutral defaults")
     print("PASS: inheritance, case-insensitive profiles, round-trip, invalid values, config preservation and idempotent repair")
 }

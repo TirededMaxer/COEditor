@@ -31,7 +31,12 @@ void mainCRTStartup(void)
     BOOL resize = GetEnvironmentVariableW(L"CX_PROBE_RESIZE",interval_env,3) && interval_env[0]==L'1';
     if (GetEnvironmentVariableW(L"CX_PROBE_SYNC_INTERVAL",interval_env,3) && interval_env[0]==L'0')
         sync_interval=0;
-    if(!GetEnvironmentVariableW(L"CX_PROBE_DLL",library,2048)) ExitProcess(20);
+    if(!GetEnvironmentVariableW(L"CX_PROBE_DLL",library,2048)) {
+        DWORD n=GetModuleFileNameW(0,library,2048);if(!n || n>=2000)ExitProcess(20);
+        while(n && library[n-1]!=L'\\')n--;
+        const WCHAR dll[]=L"d3d11.dll";for(UINT i=0;i<sizeof(dll)/sizeof(dll[0]);i++)library[n+i]=dll[i];
+    }
+    SetEnvironmentVariableW(L"CX_TUNER_DIAG",L"1");
     { static WCHAR value[2048];static char out[4096];DWORD written;
       const WCHAR *names[]={L"CX_GRAPHICS_BACKEND",L"CX_ACTIVE_GRAPHICS_BACKEND",L"CX_ROOT",L"WINEDLLPATH",L"WINEDLLOVERRIDES"};
       for(UINT i=0;i<5;i++){if(GetEnvironmentVariableW(names[i],value,2048)){int n=WideCharToMultiByte(CP_UTF8,0,value,-1,out,sizeof(out),0,0);WriteFile(GetStdHandle(STD_ERROR_HANDLE),out,n-1,&written,0);WriteFile(GetStdHandle(STD_ERROR_HANDLE),"\n",1,&written,0);}}

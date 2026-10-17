@@ -273,7 +273,7 @@ final class TunerModel: ObservableObject {
     func set(_ key: String,_ value: Int) {
         guard get(key) != value else { return }
         // Restore an inherited field's original absence when an edit is undone.
-        if key != "mouse" && key != "wheel" && savedFile.sections[selected]?[key] == nil && savedFile.value(key,in:selected) == value {
+        if key != "mouse" && key != "wheel" && savedFile.sections[selected]?[key] == nil && savedFile.value(key,in:selected) == value && (isGlobal || file.value(key,in:"global") == value) {
             file.sections[selected]?.removeValue(forKey:key)
         } else { file.sections[selected,default:[:]][key] = value }
         edited()
@@ -475,6 +475,12 @@ func runTests() throws {
     try expect(!draft.hasUnsavedChanges,"保存成功应更新比较基线")
     draft.set("fps",120);draft.acceptSaved(saved)
     try expect(!draft.hasUnsavedChanges && draft.get("fps")==144,"重新读取应丢弃草稿并更新基线")
+    let inherited=TuningFile("[global]\nqueue=2\n[game.exe]\n")
+    draft.acceptSaved(inherited);draft.selected="global";draft.set("queue",3)
+    draft.selected="game.exe";draft.set("queue",2)
+    try expect(draft.get("queue")==2 && draft.file.sections["game.exe"]?["queue"]==2,"通用值变化后，游戏的显式覆盖不得误当作撤销")
+    draft.selected="global";draft.set("queue",2)
+    try expect(draft.get("queue")==2 && draft.file.value("queue",in:"game.exe")==2,"通用与游戏覆盖必须保持独立")
     draft.acceptSaved(.initial);draft.selected="global"
     draft.setFollowingGame("drawables",true,manualValue:3);draft.setFollowingGame("queue",true,manualValue:2);draft.setFrameLimitEnabled(false)
     try expect(!draft.hasUnsavedChanges,"跟随游戏和关闭限帧的同状态回写不得写入默认数值")

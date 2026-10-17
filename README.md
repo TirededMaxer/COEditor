@@ -6,7 +6,7 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 
 ## 下载与安装
 
-在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.4.2-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
+在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.4.3-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
 
 **当前 DMG 是管理工具，需要已经准备好的本地补丁引擎与 Steam 容器；它不会自动下载安装 CrossOver 或替你完成 Wine 构建。** 从 1.3 升级时，限帧、提交节奏和呈现统计还需要更新匹配的 Wine 驱动与本地维护清单；仅替换应用不会给旧驱动增加这些功能。 首次从源码建立补丁环境，请阅读 [构建与集成](docs/BUILDING.md)。本仓库不分发 CrossOver 商业运行时、Steam 客户端、游戏或账号数据。
 

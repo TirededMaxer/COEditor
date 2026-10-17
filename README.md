@@ -6,7 +6,7 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 
 ## 下载与安装
 
-在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.4.0-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
+在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.4.1-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
 
 **当前 DMG 是管理工具，需要已经准备好的本地补丁引擎与 Steam 容器；它不会自动下载安装 CrossOver 或替你完成 Wine 构建。** 从 1.3 升级时，限帧、提交节奏和呈现统计还需要更新匹配的 Wine 驱动与本地维护清单；仅替换应用不会给旧驱动增加这些功能。 首次从源码建立补丁环境，请阅读 [构建与集成](docs/BUILDING.md)。本仓库不分发 CrossOver 商业运行时、Steam 客户端、游戏或账号数据。
 
@@ -48,23 +48,17 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 
 Metal 设置适用于补丁中的 D3DMetal 路径；不会自动改变 DXVK / DXMT 的呈现行为。队列代理仅支持已注册的 x86-64 D3D11 程序，保留原始 D3DMetal DLL 并转发其三个设备创建导出。Steam 客户端相关进程跳过游戏画面覆盖。
 
-## 从源码构建应用
+## 云端构建与发布
 
-需要 Xcode Command Line Tools 和支持本源码的 Swift / macOS SDK，验证使用 Swift 6.4。
+应用、DMG 以及 Wine / D3D11 组件由 [GitHub Actions](https://github.com/TirededMaxer/COEditor/actions/workflows/build.yml) 从源码构建。本地只保留源码及相关文件。
 
-```sh
-./scripts/build-app.sh
-open 'build/release/COEditor.app'
-```
+- 推送 main、提交 PR 或手动运行工作流，会执行干净构建、测试、DMG 签名和挂载校验，并上传 Actions artifacts。
+- 推送与应用版本一致的 v* 标签，两项构建成功后自动发布新版。附件会从 GitHub 下载比对，确认新 Release 成功后再删除旧 Release。
+- 每次从官方地址下载匹配 Wine 源码；不使用本机 CrossOver 开发库、编译缓存或预先构建的 Wine 目录。
+- DMG 附带 SHA256SUMS 与 BUILDINFO.json，可追溯源码提交、构建运行及工具链。组件 artifact 同时保留对应 Wine 源码。
+- Actions artifacts 保留 7 天，Release 只保留最新版。工作流、手动触发和运行时集成见 [构建说明](docs/BUILDING.md)。
 
-本地构建使用 ad-hoc 签名；公开 DMG 未经 Developer ID 签名或 Apple 公证，macOS 可能要求在“隐私与安全性”中手动允许打开。
-
-```sh
-./scripts/build-app.sh debug
-'build/debug/COEditor.app/Contents/MacOS/CrossOverTuner' --self-test
-'build/debug/COEditor.app/Contents/MacOS/CrossOverTuner' --library-test
-./scripts/test-native.sh
-```
+应用使用 ad-hoc 签名；公开 DMG 未经 Developer ID 签名或 Apple 公证，macOS 可能要求在“隐私与安全性”中手动允许打开。
 
 ## 目录
 

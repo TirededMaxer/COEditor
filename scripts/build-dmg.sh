@@ -19,7 +19,7 @@ DMG 不包含 CrossOver 商业运行时、Steam 或游戏，也不会自动安�
 已有补丁环境的用户可直接替换旧调整器，配置继续保留。
 
 Apple Silicon；构建目标 macOS 13+，实际验证 macOS 27.0.1。
-本地 ad-hoc 签名，未进行 Developer ID 签名或 Apple 公证。
+ad-hoc 签名，未进行 Developer ID 签名或 Apple 公证。
 如 macOS 拦截，请在“系统设置 → 隐私与安全性”中允许打开。
 
 源码、首次配置和构建说明：
@@ -28,5 +28,6 @@ TXT
 output="$repo_root/build/COEditor-$version-macOS-arm64.dmg"
 if [ -e "$output" ]; then echo "Output already exists: $output" >&2; exit 1; fi
 hdiutil create -volname COEditor -srcfolder "$staging" -ov -format UDZO "$output"
-(cd "$repo_root/build" && shasum -a 256 "$(basename "$output")" > SHA256SUMS)
+python3 "$repo_root/scripts/write-build-info.py" "$output"
+(cd "$repo_root/build" && shasum -a 256 "$(basename "$output")" BUILDINFO.json > SHA256SUMS)
 printf 'Built: %s\n' "$output"

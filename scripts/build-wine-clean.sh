@@ -1,0 +1,42 @@
+#!/bin/bash
+# Complete source build on a clean Intel macOS runner; no installed CrossOver needed.
+set -euo pipefail
+if [ "$#" -ne 2 ]; then echo 'Usage: build-wine-clean.sh WINE_SOURCE NEW_BUILD_DIRECTORY' >&2; exit 2; fi
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+wine_source="$(cd "$1" && pwd)"
+[ ! -e "$2" ] || { echo 'Build directory must not exist' >&2; exit 1; }
+mkdir -p "$2"
+wine_build="$(cd "$2" && pwd)"
+python3 "$repo_root/scripts/apply-wine-patch.py" "$wine_source"
+(
+  cd "$wine_build"
+  "$wine_source/configure" --enable-win64 --host=x86_64-apple-darwin \
+    --without-x --without-wayland --without-alsa --without-pulse \
+    --without-dbus --without-gstreamer --without-unwind \
+    CC=clang CXX=clang++ OBJC=clang
+)
+"$repo_root/scripts/build-wine.sh" "$wine_source" "$wine_build"
+make -C "$wine_build" -j "${JOBS:-4}" include/d3d11.h include/dxgi.h dlls/kernel32/x86_64-windows/libkernel32.a
+PE_CLANG="$(command -v clang)" PE_LINK="$(command -v lld-link)" \
+  "$repo_root/scripts/build-proxy.sh" "$wine_source" "$wine_build/include" \
+  "$wine_build/dlls/kernel32/x86_64-windows/libkernel32.a"
+components="$repo_root/build/wine-components"
+mkdir -p "$components"
+for name in ntdll win32u; do
+  cp "$wine_build/dlls/$name/$name.so" "$components/"
+done
+cp "$wine_build/dlls/winemac.drv/winemac.so" "$components/"
+cp "$wine_build/server/wineserver" "$components/"
+cp "$repo_root/build/proxy/d3d11.dll" "$components/"
+for name in ntdll.so win32u.so winemac.so wineserver; do
+  codesign --force --sign - "$components/$name"
+  codesign --verify --strict "$components/$name"
+  file "$components/$name"
+done
+cp "$repo_root/LICENSE" "$components/"
+cp "$wine_source/coeditor-source.json" "$components/"
+cp "$repo_root/patches/wine-26.3/"* "$components/"
+# Keep the exact corresponding source with these cloud-only component artifacts.
+tar -C "$wine_source" -czf "$components/wine-source.tar.gz" .
+printf '%s\n' "${GITHUB_SHA:-unknown}" > "$components/SOURCE_COMMIT"
+tar -C "$components" -czf "$repo_root/build/COEditor-Wine-26.3-x86_64.tar.gz" .

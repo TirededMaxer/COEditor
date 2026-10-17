@@ -23,7 +23,10 @@ with tempfile.TemporaryDirectory(prefix="coeditor-source-") as temporary:
     print("Downloading " + metadata["source"], flush=True)
     with urllib.request.urlopen(metadata["source"], timeout=120) as response, archive.open("wb") as output:
         shutil.copyfileobj(response, output)
-    digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
+    with archive.open("rb") as downloaded:
+        digest = hashlib.file_digest(downloaded, "sha256").hexdigest()
+    if digest != metadata["source_sha256"]:
+        raise SystemExit("Official source archive SHA-256 mismatch")
     with tarfile.open(archive) as tar:
         members = tar.getmembers()
         configure = next((m for m in members if m.isfile() and m.name.endswith("/wine/configure")), None)

@@ -1,5 +1,7 @@
 # Build products and local runtime data
 /build/
+/dist/
+*.dmg
 /.build/
 /vendor/
 /work/

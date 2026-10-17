@@ -67,15 +67,16 @@ jobs:
           persist-credentials: false
       - name: Install build tools
         run: |
-          brew install bison flex llvm lld freetype
+          brew install bison flex llvm lld freetype molten-vk
           for tool in bison flex llvm lld; do
             echo "$(brew --prefix "$tool")/bin" >> "$GITHUB_PATH"
           done
-      - name: Download official source and build from scratch
+      - name: Download and verify official source
         run: |
           test "$(uname -m)" = x86_64
           python3 scripts/fetch-wine-source.py "$RUNNER_TEMP/coeditor-wine-source"
-          ./scripts/build-wine-clean.sh "$RUNNER_TEMP/coeditor-wine-source" "$RUNNER_TEMP/coeditor-wine-build"
+      - name: Build and package Wine components from scratch
+        run: ./scripts/build-wine-clean.sh "$RUNNER_TEMP/coeditor-wine-source" "$RUNNER_TEMP/coeditor-wine-build"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: COEditor-Wine-26.3-x86_64-${{ github.sha }}

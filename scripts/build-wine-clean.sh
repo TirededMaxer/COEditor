@@ -12,8 +12,10 @@ python3 "$repo_root/scripts/apply-wine-patch.py" "$wine_source"
   cd "$wine_build"
   "$wine_source/configure" --enable-win64 --host=x86_64-apple-darwin \
     --without-x --without-wayland --without-alsa --without-pulse \
-    --without-dbus --without-gstreamer --without-unwind \
-    CC=clang CXX=clang++ OBJC=clang
+    --without-dbus --without-gstreamer --without-unwind --with-vulkan \
+    CC=clang CXX=clang++ OBJC=clang \
+    "CPPFLAGS=-I$(brew --prefix molten-vk)/include" \
+    "LDFLAGS=-L$(brew --prefix molten-vk)/lib"
 )
 "$repo_root/scripts/build-wine.sh" "$wine_source" "$wine_build"
 make -C "$wine_build" -j "${JOBS:-4}" include/d3d11.h include/dxgi.h dlls/kernel32/x86_64-windows/libkernel32.a

@@ -5,10 +5,10 @@
 日常构建在 [Build and release](https://github.com/TirededMaxer/COEditor/actions/workflows/build.yml) 中完成。本地只保留 Git 源码、补丁、资源、测试、脚本与文档，不保留应用副本、DMG、下载的依赖或编译缓存。
 
 - 推送 main、提交 PR 或手动 Run workflow：构建 debug/release 应用，运行配置、库解析、原生输入和帧控制自测，制作并只读挂载校验 DMG。
-- 独立 Intel macOS 作业每次下载官方 CrossOver 26.3 源码，校验并应用 21 文件补丁，从空目录编译四个耦合 Wine 组件及 D3D11 代理。完整匹配 Wine 源码、补丁、许可证及来源记录随组件 artifact 一起保存。
+- 独立 Intel macOS 作业每次下载官方 CrossOver 26.3 源码，校验源码包 SHA-256 并应用 21 文件补丁，从空目录编译四个耦合 Wine 组件及 D3D11 代理。完整匹配 Wine 源码、补丁、许可证及来源记录随组件 artifact 一起保存。
 - 两项作业均成功后，v* 标签才触发 Release。标签需与 Info.plist 的版本一致。云端先上传草稿，下载比对每个附件，确认正式发布为最新版后才删除旧 Release；Git 标签和历史保留。
 - Actions artifacts 保留 7 天；正式 Release 保留最新版。应用 artifact 包含 DMG、SHA256SUMS 和 BUILDINFO.json；后者记录源码提交、构建链接、编译器及 DMG 哈希。
-- 不使用 actions/cache、自托管 runner、本地 Wine 对象、预编译导入库或已安装 CrossOver 的开发库。工具来自托管 runner / Homebrew，Wine 源码来自 files.json 中的官方地址。
+- 不使用 actions/cache、自托管 runner、本地 Wine 对象、预编译导入库或已安装 CrossOver 的开发库。工具与 MoltenVK 开发库来自托管 runner / Homebrew，Wine 源码来自 files.json 中的官方地址，并核对其中固定的源码包 SHA-256。
 
 发布流程：修改 Info.plist 的版本与构建号，更新 CHANGELOG 和对应 RELEASE_NOTES；推送源码并确认 main 构建成功，再推送同一提交的 v版本号 标签。之后由云端打包、验证和发布。本地无需安装 Xcode 或先生成安装包。
 

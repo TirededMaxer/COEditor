@@ -278,6 +278,14 @@ final class TunerModel: ObservableObject {
         } else { file.sections[selected,default:[:]][key] = value }
         edited()
     }
+    func setFollowingGame(_ key:String,_ follows:Bool,manualValue:Int) {
+        guard follows != (get(key)==0) else { return }
+        set(key,follows ? 0:manualValue)
+    }
+    func setFrameLimitEnabled(_ enabled:Bool) {
+        guard enabled != (get("fps") != 0) else { return }
+        set("fps",enabled ? 120:0)
+    }
     func binding(_ key: String) -> Binding<Bool> { Binding(get:{self.get(key) != 0},set:{self.set(key,$0 ? 1 : 0)}) }
     func reload() {
         do { let loaded = Storage.fm.fileExists(atPath:Storage.ini.path) ? TuningFile(try String(contentsOf:Storage.ini,encoding:.utf8)) : .initial;try loaded.validate();acceptSaved(loaded);message="已读取保存的设置" }
@@ -354,9 +362,9 @@ struct TunerView:View {
                 VStack(alignment:.leading,spacing:10) {
                     VStack(alignment:.leading,spacing:10) {
                     HStack {Text("显示同步").frame(width:135,alignment:.leading);Picker("显示同步",selection:Binding(get:{model.get("sync")},set:{model.set("sync",$0)})){Text("跟随游戏").tag(-1);Text("强制开启").tag(1);Text("强制关闭").tag(0)}.labelsHidden()}
-                    Toggle("缓冲数量跟随游戏",isOn:Binding(get:{model.get("drawables")==0},set:{model.set("drawables",$0 ? 0 : 3)}))
+                    Toggle("缓冲数量跟随游戏",isOn:Binding(get:{model.get("drawables")==0},set:{model.setFollowingGame("drawables",$0,manualValue:3)}))
                     HStack {Text("Metal 缓冲数量").frame(width:135,alignment:.leading);Picker("Metal 缓冲数量",selection:Binding(get:{max(2,model.get("drawables"))},set:{if model.get("drawables") != 0 {model.set("drawables",$0)}})){Text("2").tag(2);Text("3").tag(3)}.pickerStyle(.segmented).labelsHidden().disabled(model.get("drawables")==0)}
-                    Toggle("队列长度跟随游戏",isOn:Binding(get:{model.get("queue")==0},set:{model.set("queue",$0 ? 0 : 2)})).disabled(!model.supportsQueue)
+                    Toggle("队列长度跟随游戏",isOn:Binding(get:{model.get("queue")==0},set:{model.setFollowingGame("queue",$0,manualValue:2)})).disabled(!model.supportsQueue)
                     NumberControl(label:"D3D11 队列上限",value:model.get("queue"),bounds:1...16,enabled:model.get("queue") != 0 && model.supportsQueue,placeholder:model.supportsQueue ? "默认":"未适配"){model.set("queue",$0)}
                     }
                     Text("Metal 选项适用于 D3DMetal；队列上限适用于已适配的 64 位 D3D11 游戏。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
@@ -365,7 +373,7 @@ struct TunerView:View {
             GroupBox("帧率与提交") {
                 VStack(alignment:.leading,spacing:10) {
                     VStack(alignment:.leading,spacing:10) {
-                    Toggle("按游戏限帧",isOn:Binding(get:{model.get("fps") != 0},set:{model.set("fps",$0 ? 120:0)}))
+                    Toggle("按游戏限帧",isOn:Binding(get:{model.get("fps") != 0},set:{model.setFrameLimitEnabled($0)}))
                     HStack {
                         Text("帧率上限").frame(width:135,alignment:.leading)
                         TextField("FPS",value:Binding(get:{max(1,model.get("fps"))},set:{if model.get("fps") != 0 {model.set("fps",min(1000,max(1,$0)))}}),formatter:NumberFormatter.coeditorInteger).frame(width:75)
@@ -445,6 +453,9 @@ func runTests() throws {
     draft.acceptSaved(legacy);draft.selected="cs2.exe"
     try expect(!draft.hasUnsavedChanges && draft.message.isEmpty,"打开应用不得显示未保存")
     for key in ["mouse","wheel","sync","drawables","queue","fps","pacing","stats"] {draft.set(key,draft.get(key))}
+    draft.setFollowingGame("drawables",false,manualValue:3)
+    draft.setFollowingGame("queue",false,manualValue:2)
+    draft.setFrameLimitEnabled(true)
     try expect(!draft.hasUnsavedChanges && draft.message.isEmpty && draft.file==legacy,"控件回写相同数值不得创建覆盖或显示未保存")
     draft.selected="global";draft.selected="cs2.exe"
     try expect(!draft.hasUnsavedChanges,"切换游戏不应修改配置")
@@ -464,6 +475,11 @@ func runTests() throws {
     try expect(!draft.hasUnsavedChanges,"保存成功应更新比较基线")
     draft.set("fps",120);draft.acceptSaved(saved)
     try expect(!draft.hasUnsavedChanges && draft.get("fps")==144,"重新读取应丢弃草稿并更新基线")
+    draft.acceptSaved(.initial);draft.selected="global"
+    draft.setFollowingGame("drawables",true,manualValue:3);draft.setFollowingGame("queue",true,manualValue:2);draft.setFrameLimitEnabled(false)
+    try expect(!draft.hasUnsavedChanges,"跟随游戏和关闭限帧的同状态回写不得写入默认数值")
+    draft.setFollowingGame("drawables",false,manualValue:3);draft.setFrameLimitEnabled(true)
+    try expect(draft.hasUnsavedChanges && draft.get("drawables")==3 && draft.get("fps")==120,"实际切换开关应写入数值")
     print("PASS: clean startup, no-op control callbacks, scope switching, edit/revert, input inheritance and saved baselines")
     print("PASS: legacy preset metadata removal, unchanged runtime values, independent manual edits and neutral defaults")
     print("PASS: inheritance, case-insensitive profiles, round-trip, invalid values, config preservation and idempotent repair")

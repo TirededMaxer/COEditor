@@ -35,12 +35,12 @@
     {
       "path": "dlls/winemac.drv/cx_tuner_config.h",
       "before": null,
-      "after": "a2188a9c4ae5140fbb35513b265c46bd092d9a38543076dbf6e43fcf8899f58e"
+      "after": "a32c51e032b25750c87155f545d15bfe456a0985dcc0213b4d1522ab4650d919"
     },
     {
       "path": "dlls/winemac.drv/d3dmetal_objc.m",
       "before": "6a2f914b8d1ece300170e388716bd6c26cf52d222aa9f32aac8a203e3b9f3976",
-      "after": "a57425e87a791cc17858982d84ded2fe368e7c6cf9705fc76010a59df419b9ee"
+      "after": "d84d5c721ce95d9dca62831f1992c5782089e700aa755a8b58a0fe075a8d1cd3"
     },
     {
       "path": "dlls/winemac.drv/event.c",
@@ -96,6 +96,16 @@
       "path": "server/queue.c",
       "before": "b62110b4ce5fe09ac68d05b0954de7c92dc643d02724dec5794ce93a1495d88d",
       "after": "27c6acf91557ddee4a34356a88ab343d759785b55a6039f355127528c4cd2dc3"
+    },
+    {
+      "path": "dlls/winemac.drv/cx_frame_control.h",
+      "before": null,
+      "after": "2271c2ff4a74d9812f31069f1b7f23771205ff8d03802b0bd9d8f116290a7944"
+    },
+    {
+      "path": "dlls/winemac.drv/cx_frame_control.m.h",
+      "before": null,
+      "after": "718571647eb968b2bff6a4fe8db7dcc1b873aeefe078e0d5583dfd34cdd49a6f"
     }
   ]
 }

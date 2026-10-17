@@ -3,11 +3,6 @@ import SwiftUI
 import CryptoKit
 import UniformTypeIdentifiers
 
-enum GraphicsPreset:Int,CaseIterable {
-    case custom=0,gameDefault,smooth,balanced,lowLatency
-    var name:String {switch self {case .custom:return "自定义";case .gameDefault:return "游戏默认";case .smooth:return "流畅优先";case .balanced:return "均衡";case .lowLatency:return "低延迟"}}
-    var values:[Int]? {switch self {case .custom:return nil;case .gameDefault:return [-1,0,0];case .smooth:return [1,3,3];case .balanced:return [1,3,2];case .lowLatency:return [1,2,1]}}
-}
 struct TuningFile {
     var sections: [String: [String: Int]] = [:]
     init(_ text: String = "") {
@@ -19,27 +14,16 @@ struct TuningFile {
                 if sections[section] == nil { sections[section] = [:] }
             } else if !line.hasPrefix("#") && !line.hasPrefix(";"), let eq = line.firstIndex(of: "="), let value = Int(line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)) {
                 let key = line[..<eq].trimmingCharacters(in: .whitespaces)
+                if key == "preset" || key == "preset_fps" { continue }
                 sections[section, default: [:]][key] = value
             }
         }
     }
     static var initial: TuningFile {
-        TuningFile("[global]\nmouse=1\nwheel=1\nsync=-1\ndrawables=0\nqueue=0\n[cs2.exe]\nsync=1\ndrawables=2\nqueue=1\n")
+        TuningFile("[global]\nmouse=1\nwheel=1\nsync=-1\ndrawables=0\nqueue=0\nfps=0\npacing=0\nstats=0\n")
     }
     func value(_ key: String, in section: String) -> Int {
-        sections[section.lowercased()]?[key] ?? sections["global"]?[key] ?? (["mouse": 1, "wheel": 1, "sync": -1, "drawables": 0, "queue": 0][key] ?? 0)
-    }
-    func graphicsPreset(in section:String)->GraphicsPreset {
-        let values=[value("sync",in:section),value("drawables",in:section),value("queue",in:section)]
-        if let raw=sections[section.lowercased()]?["preset"],let preset=GraphicsPreset(rawValue:raw) {
-            return preset == .custom || preset.values==values ? preset:.custom
-        }
-        return GraphicsPreset.allCases.first{$0.values==values} ?? .custom
-    }
-    mutating func applyPreset(_ preset:GraphicsPreset,in section:String) {
-        let section=section.lowercased()
-        if let values=preset.values {for (key,value) in zip(["sync","drawables","queue"],values){sections[section,default:[:]][key]=value}}
-        sections[section,default:[:]]["preset"]=preset.rawValue
+        sections[section.lowercased()]?[key] ?? sections["global"]?[key] ?? (["mouse": 1, "wheel": 1, "sync": -1, "drawables": 0, "queue": 0, "fps": 0, "stats": 0, "pacing": 0][key] ?? 0)
     }
     func validate() throws {
         for (section, values) in sections {
@@ -47,11 +31,12 @@ struct TuningFile {
             for (key, value) in values {
                 let valid: Bool
                 switch key {
-                case "mouse", "wheel": valid = (0...1).contains(value)
+                case "mouse", "wheel", "stats": valid = (0...1).contains(value)
                 case "sync": valid = (-1...1).contains(value)
                 case "drawables": valid = [0, 2, 3].contains(value)
                 case "queue": valid = (0...16).contains(value)
-                case "preset": valid = GraphicsPreset(rawValue:value) != nil
+                case "fps": valid = (0...1000).contains(value)
+                case "pacing": valid = (0...2).contains(value)
                 default: valid = true
                 }
                 guard valid else { throw TunerError.message("\(section) 的 \(key) 数值无效") }
@@ -76,7 +61,7 @@ struct Component: Codable {
     var allowedBefore: [String]
     var optional: Bool?
 }
-struct InstallManifest: Codable { var runtime: String; var baseVersion: String; var components: [Component] }
+struct InstallManifest: Codable { var runtime: String; var baseVersion: String; var components: [Component]; var frameControlVersion:Int? }
 struct MaintenanceResult: Codable {
     var ok: Bool
     var runtime: String
@@ -238,6 +223,8 @@ final class TunerModel: ObservableObject {
     @Published var bindings:[String:GameBinding] = [:]
     @Published var queueProfiles:Set<String> = []
     @Published var showGamePicker = false
+    @Published var showFrameStats = false
+    @Published var supportsFrameControl = false
     init() { reload();check();refreshGames() }
     var scopes: [String] { ["global"] + file.sections.keys.filter{$0 != "global"}.sorted() }
     var isGlobal: Bool { selected == "global" }
@@ -269,21 +256,13 @@ final class TunerModel: ObservableObject {
     func get(_ key: String) -> Int { file.value(key,in:selected) }
     func set(_ key: String,_ value: Int) { file.sections[selected,default:[:]][key] = value;message = "有未保存的修改" }
     func binding(_ key: String) -> Binding<Bool> { Binding(get:{self.get(key) != 0},set:{self.set(key,$0 ? 1 : 0)}) }
-    var preset: String {
-        file.graphicsPreset(in:selected).name
-    }
-    var canEditGraphics:Bool {file.graphicsPreset(in:selected) == .custom}
-    func apply(_ name: String) {
-        guard let preset=GraphicsPreset.allCases.first(where:{$0.name==name}) else{return}
-        file.applyPreset(preset,in:selected);message="有未保存的修改"
-    }
     func reload() {
         do { if Storage.fm.fileExists(atPath:Storage.ini.path) { file = TuningFile(try String(contentsOf:Storage.ini,encoding:.utf8));try file.validate() };message="已读取保存的设置" }
         catch { message=error.localizedDescription }
         if file.sections[selected] == nil { selected="global" }
     }
     @discardableResult func save() -> Bool { do { try Storage.save(file);message="已保存，重启对应游戏后生效";return true } catch {message="保存失败："+error.localizedDescription;return false} }
-    func check() { let r=Storage.maintain(repair:true);healthy=r.ok;environment="补丁引擎 \(r.runtime) · CrossOver \(r.installedCrossOver)\n"+r.notes.joined(separator:"\n") }
+    func check() { supportsFrameControl = (try? Storage.manifest().frameControlVersion) == 1;let r=Storage.maintain(repair:true);healthy=r.ok;environment="补丁引擎 \(r.runtime) · CrossOver \(r.installedCrossOver)\n"+r.notes.joined(separator:"\n") }
     func addGame(_ game:InstalledSteamGame,exe:GameExecutable) {
         let name=exe.profile
         if let old=bindings[name],old.executable != exe.path {message="另一个配置使用同名启动程序，暂时无法分别设置：\(name)";return}
@@ -331,6 +310,9 @@ struct GamePickerView:View {
         .onAppear {select(model.bindings[model.selected]?.appID ?? model.games.first?.id)}
     }
 }
+extension NumberFormatter {
+    static var coeditorInteger:NumberFormatter {let f=NumberFormatter();f.numberStyle = .none;f.minimum=1;f.maximum=1000;f.allowsFloats=false;return f}
+}
 struct ContentHeightKey:PreferenceKey {static var defaultValue:CGFloat=650;static func reduce(value:inout CGFloat,nextValue:()->CGFloat){value=nextValue()}}
 struct NumberControl: View {
     var label:String;var value:Int;var bounds:ClosedRange<Double>;var enabled:Bool;var placeholder:String="默认";var change:(Int)->Void
@@ -347,15 +329,32 @@ struct TunerView:View {
             if !model.selectedProgram.isEmpty {Text("启动程序："+model.selectedProgram).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal:false,vertical:true)}
             GroupBox("画面") {
                 VStack(alignment:.leading,spacing:10) {
-                    HStack {Text("预设").frame(width:135,alignment:.leading);Picker("预设",selection:Binding(get:{model.preset},set:{model.apply($0)})){ForEach(["游戏默认","流畅优先","均衡","低延迟","自定义"],id:\.self){Text($0)}}.labelsHidden()}
                     VStack(alignment:.leading,spacing:10) {
                     HStack {Text("显示同步").frame(width:135,alignment:.leading);Picker("显示同步",selection:Binding(get:{model.get("sync")},set:{model.set("sync",$0)})){Text("跟随游戏").tag(-1);Text("强制开启").tag(1);Text("强制关闭").tag(0)}.labelsHidden()}
                     Toggle("缓冲数量跟随游戏",isOn:Binding(get:{model.get("drawables")==0},set:{model.set("drawables",$0 ? 0 : 3)}))
                     HStack {Text("Metal 缓冲数量").frame(width:135,alignment:.leading);Picker("Metal 缓冲数量",selection:Binding(get:{max(2,model.get("drawables"))},set:{model.set("drawables",$0)})){Text("2").tag(2);Text("3").tag(3)}.pickerStyle(.segmented).labelsHidden().disabled(model.get("drawables")==0)}
                     Toggle("队列长度跟随游戏",isOn:Binding(get:{model.get("queue")==0},set:{model.set("queue",$0 ? 0 : 2)})).disabled(!model.supportsQueue)
-                    NumberControl(label:"D3D11 队列上限",value:model.get("queue"),bounds:1...4,enabled:model.get("queue") != 0 && model.supportsQueue,placeholder:model.supportsQueue ? "默认":"未适配"){model.set("queue",$0)}
-                    }.disabled(!model.canEditGraphics)
+                    NumberControl(label:"D3D11 队列上限",value:model.get("queue"),bounds:1...16,enabled:model.get("queue") != 0 && model.supportsQueue,placeholder:model.supportsQueue ? "默认":"未适配"){model.set("queue",$0)}
+                    }
                     Text("Metal 选项适用于 D3DMetal；队列上限适用于已适配的 64 位 D3D11 游戏。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                }.padding(9)
+            }
+            GroupBox("帧率与提交") {
+                VStack(alignment:.leading,spacing:10) {
+                    VStack(alignment:.leading,spacing:10) {
+                    Toggle("按游戏限帧",isOn:Binding(get:{model.get("fps") != 0},set:{model.set("fps",$0 ? 120:0)}))
+                    HStack {
+                        Text("帧率上限").frame(width:135,alignment:.leading)
+                        TextField("FPS",value:Binding(get:{max(1,model.get("fps"))},set:{model.set("fps",min(1000,max(1,$0)))}),formatter:NumberFormatter.coeditorInteger).frame(width:75)
+                        Stepper("",value:Binding(get:{max(1,model.get("fps"))},set:{model.set("fps",$0)}),in:1...1000).labelsHidden()
+                        Text("FPS").foregroundStyle(.secondary);Spacer()
+                    }.disabled(model.get("fps")==0)
+                    HStack {Text("提交节奏").frame(width:135,alignment:.leading);Picker("提交节奏",selection:Binding(get:{model.get("pacing")},set:{model.set("pacing",$0)})){Text("关闭").tag(0);Text("均衡").tag(1);Text("低延迟").tag(2)}.labelsHidden()}
+                    Text("在领取下一帧缓冲前等待呈现进度；低延迟档限制更紧，可能降低帧率。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                    }.disabled(!model.supportsFrameControl)
+                    HStack {Toggle("实际呈现帧时间统计",isOn:model.binding("stats")).disabled(!model.supportsFrameControl);Spacer();Button("查看统计…"){model.showFrameStats=true}}
+                    if !model.supportsFrameControl {Text("未检测到帧控制补丁，请先更新运行时组件。").font(.caption).foregroundStyle(.orange)}
+                    Text("适用于 D3DMetal。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
                 }.padding(9)
             }
             GroupBox("输入") {
@@ -375,11 +374,11 @@ struct TunerView:View {
             HStack(alignment:.top) {Image(systemName:model.healthy ? "checkmark.circle.fill":"exclamationmark.triangle.fill").foregroundStyle(model.healthy ? .green:.orange);Text(model.environment).font(.caption).textSelection(.enabled);Spacer();Button("检查环境"){model.check()} }
             Text(model.message).font(.caption).foregroundStyle(.secondary).frame(minHeight:18)
             HStack {Button("重新读取"){model.reload()};Spacer();Button("打开 Steam"){if model.save() && model.healthy {NSWorkspace.shared.open(URL(fileURLWithPath:"/Applications/Sevoflurane.app"))}};Button("保存设置"){model.save()}.keyboardShortcut("s",modifiers:.command).buttonStyle(.borderedProminent)}
-            Text("保存后重启对应游戏生效。").font(.caption).foregroundStyle(.secondary)
         }.padding(22).frame(width:600).fixedSize(horizontal:false,vertical:true).disabled(model.busy)
         .background(GeometryReader{geometry in Color.clear.preference(key:ContentHeightKey.self,value:geometry.size.height)})
         }.frame(width:620,height:min(contentHeight,(NSScreen.main?.visibleFrame.height ?? 900)-70))
         .onPreferenceChange(ContentHeightKey.self){height in if abs(contentHeight-height)>1 {contentHeight=height;resize(height)}}
+        .sheet(isPresented:$model.showFrameStats){FrameStatsView(profile:model.selected,name:model.label(model.selected))}
         .sheet(isPresented:$model.showGamePicker){GamePickerView(model:model)}
     }
 }
@@ -402,19 +401,26 @@ func runTests() throws {
     let fixed=try Storage.repairedConfig(source,runtime:"/a path/runtime")
     assert(fixed.contains("\"KEEP\" = \"unchanged\""));assert(fixed.contains("\\\"A B\\\""));assert(!fixed.contains("\\/"));let twice=try Storage.repairedConfig(fixed,runtime:"/a path/runtime");assert(twice==fixed)
     func expect(_ condition:Bool,_ detail:String)throws {if !condition {throw TunerError.message(detail)}}
-    var presets=TuningFile.initial
-    try expect(presets.graphicsPreset(in:"cs2.exe") == .lowLatency,"旧配置无法识别预设")
-    presets.applyPreset(.custom,in:"cs2.exe")
-    try expect([presets.value("sync",in:"cs2.exe"),presets.value("drawables",in:"cs2.exe"),presets.value("queue",in:"cs2.exe")]==[1,2,1],"切换自定义不应改变参数")
-    let restored=TuningFile(presets.serialized())
-    try expect(restored.graphicsPreset(in:"cs2.exe") == .custom,"自定义模式未在保存重读后保持")
-    try expect(restored.graphicsPreset(in:"global") == .gameDefault,"游戏模式不应改变通用模式")
-    presets.applyPreset(.smooth,in:"cs2.exe")
-    try expect(presets.graphicsPreset(in:"cs2.exe") == .smooth,"重新选择预设失败")
-    presets.sections["cs2.exe"]?["queue"]=1
-    try expect(presets.graphicsPreset(in:"cs2.exe") == .custom,"外部改动不应被误报为预设")
-    try presets.validate()
-    print("PASS: preset/custom round-trip, unchanged custom values, per-profile mode and legacy migration")
+    let legacy=TuningFile("[global]\npreset=3\npreset_fps=144\nmouse=1\nwheel=1\nqueue=2\n[CS2.EXE]\npreset=4\npreset_fps=120\nsync=1\ndrawables=3\nqueue=16\nfps=120\npacing=2\nstats=1\nfuture_key=7\n")
+    try legacy.validate()
+    try expect(legacy.sections["cs2.exe"] == ["sync":1,"drawables":3,"queue":16,"fps":120,"pacing":2,"stats":1,"future_key":7],"移除旧预设标记不得改变实际参数")
+    try expect(legacy.value("mouse",in:"cs2.exe")==1 && legacy.value("wheel",in:"cs2.exe")==1,"旧配置的通用输入继承应保留")
+    try expect(!legacy.serialized().contains("preset"),"保存时不得继续写入旧预设标记")
+    try expect(TuningFile(legacy.serialized()).sections==legacy.sections,"旧配置清理后应能完整往返")
+    var manual=legacy
+    manual.sections["cs2.exe"]?["queue"]=5
+    manual.sections["cs2.exe"]?["fps"]=0
+    manual.sections["cs2.exe"]?["pacing"]=0
+    try manual.validate()
+    let restored=TuningFile(manual.serialized())
+    try expect(restored.value("queue",in:"cs2.exe")==5 && restored.value("fps",in:"cs2.exe")==0 && restored.value("pacing",in:"cs2.exe")==0 && restored.value("stats",in:"cs2.exe")==1,"独立调整不得联动改写其他参数")
+    try expect(TuningFile.initial.value("sync",in:"cs2.exe")==(-1) && TuningFile.initial.value("drawables",in:"cs2.exe")==0 && TuningFile.initial.value("queue",in:"cs2.exe")==0,"新配置画面应跟随游戏")
+    try runFrameStatsTests()
+    let controls=TuningFile("[global]\nqueue=16\nfps=120\nstats=1\npacing=2\n[cs2.exe]\nfps=90\n")
+    try controls.validate()
+    try expect(controls.value("fps",in:"cs2.exe")==90 && controls.value("pacing",in:"cs2.exe")==2,"新参数继承失败")
+    try expect(TuningFile().value("fps",in:"global")==0 && TuningFile().value("pacing",in:"global")==0,"旧配置必须默认关闭新功能")
+    print("PASS: legacy preset metadata removal, unchanged runtime values, independent manual edits and neutral defaults")
     print("PASS: inheritance, case-insensitive profiles, round-trip, invalid values, config preservation and idempotent repair")
 }
 @main struct TunerMain {static func main() {

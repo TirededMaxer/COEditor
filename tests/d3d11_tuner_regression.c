@@ -86,7 +86,10 @@ void mainCRTStartup(void)
         IDXGIDevice1 *dxgi;UINT latency=0;
         if(FAILED(ID3D11Device_QueryInterface(device,&device1_iid,(void**)&dxgi)))ExitProcess(40);
         if(FAILED(IDXGIDevice1_GetMaximumFrameLatency(dxgi,&latency)))ExitProcess(41);
-        if(GetEnvironmentVariableW(L"CX_PROBE_EXPECT_QUEUE",interval_env,3) && latency!=(UINT)(interval_env[0]-L'0'))ExitProcess(42);
+        if(GetEnvironmentVariableW(L"CX_PROBE_EXPECT_QUEUE",interval_env,3)) {
+            UINT expected=0;for(WCHAR *at=interval_env;*at;at++)expected=expected*10+(*at-L'0');
+            if(latency!=expected)ExitProcess(42);
+        }
         IDXGIDevice1_Release(dxgi);
     }
     ID3D11RenderTargetView_Release(target);

@@ -5,10 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-struct cx_tuner_settings { int loaded, mouse, wheel, sync, drawables, queue; };
+struct cx_tuner_settings { int loaded, mouse, wheel, sync, drawables, queue, fps, stats, pacing; };
 static struct cx_tuner_settings cx_tuner_read(void)
 {
-    struct cx_tuner_settings result = {0, -1, -1, -2, -1, -1};
+    struct cx_tuner_settings result = {0, -1, -1, -2, -1, -1, 0, 0, 0};
     const char *prefix = getenv("WINEPREFIX"), *process = getprogname();
     char path[4096], line[512], section[256] = "";
     FILE *file;
@@ -32,13 +32,16 @@ static struct cx_tuner_settings cx_tuner_read(void)
             if (!strcmp(key, "wheel") && (value == 0 || value == 1)) result.wheel = value;
             if (!strcmp(key, "sync") && value >= -1 && value <= 1) result.sync = value;
             if (!strcmp(key, "drawables") && (value == 0 || value == 2 || value == 3)) result.drawables = value;
+            if (!strcmp(key, "fps") && value >= 0 && value <= 1000) result.fps = value;
+            if (!strcmp(key, "stats") && (value == 0 || value == 1)) result.stats = value;
+            if (!strcmp(key, "pacing") && value >= 0 && value <= 2) result.pacing = value;
             if (!strcmp(key, "queue") && value >= 0 && value <= 16) result.queue = value;
         }
     }
     fclose(file);
     /* Native Sevoflurane owns Steam's UI; game defaults never tune its CEF. */
     if (process && (!strcasecmp(process, "steam.exe") || !strcasecmp(process, "steamwebhelper.exe") || !strcasecmp(process, "steamservice.exe")))
-        { result.sync = -1; result.drawables = result.queue = 0; }
+        { result.sync = -1; result.drawables = result.queue = result.fps = result.stats = result.pacing = 0; }
     return result;
 }
 #endif

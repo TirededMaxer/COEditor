@@ -689,7 +689,7 @@
 +}
 --- /dev/null
 +++ b/dlls/winemac.drv/cx_tuner_config.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,47 @@
 +/* Per-bottle tuning shared by the macOS Wine driver components. */
 +#ifndef CX_TUNER_CONFIG_H
 +#define CX_TUNER_CONFIG_H
@@ -697,10 +697,10 @@
 +#include <stdlib.h>
 +#include <string.h>
 +#include <strings.h>
-+struct cx_tuner_settings { int loaded, mouse, wheel, sync, drawables, queue; };
++struct cx_tuner_settings { int loaded, mouse, wheel, sync, drawables, queue, fps, stats, pacing; };
 +static struct cx_tuner_settings cx_tuner_read(void)
 +{
-+    struct cx_tuner_settings result = {0, -1, -1, -2, -1, -1};
++    struct cx_tuner_settings result = {0, -1, -1, -2, -1, -1, 0, 0, 0};
 +    const char *prefix = getenv("WINEPREFIX"), *process = getprogname();
 +    char path[4096], line[512], section[256] = "";
 +    FILE *file;
@@ -724,19 +724,22 @@
 +            if (!strcmp(key, "wheel") && (value == 0 || value == 1)) result.wheel = value;
 +            if (!strcmp(key, "sync") && value >= -1 && value <= 1) result.sync = value;
 +            if (!strcmp(key, "drawables") && (value == 0 || value == 2 || value == 3)) result.drawables = value;
++            if (!strcmp(key, "fps") && value >= 0 && value <= 1000) result.fps = value;
++            if (!strcmp(key, "stats") && (value == 0 || value == 1)) result.stats = value;
++            if (!strcmp(key, "pacing") && value >= 0 && value <= 2) result.pacing = value;
 +            if (!strcmp(key, "queue") && value >= 0 && value <= 16) result.queue = value;
 +        }
 +    }
 +    fclose(file);
 +    /* Native Sevoflurane owns Steam's UI; game defaults never tune its CEF. */
 +    if (process && (!strcasecmp(process, "steam.exe") || !strcasecmp(process, "steamwebhelper.exe") || !strcasecmp(process, "steamservice.exe")))
-+        { result.sync = -1; result.drawables = result.queue = 0; }
++        { result.sync = -1; result.drawables = result.queue = result.fps = result.stats = result.pacing = 0; }
 +    return result;
 +}
 +#endif
 --- a/dlls/winemac.drv/d3dmetal_objc.m
 +++ b/dlls/winemac.drv/d3dmetal_objc.m
-@@ -25,23 +25,96 @@
+@@ -25,23 +25,99 @@
  #import <AppKit/AppKit.h>
  #import <QuartzCore/QuartzCore.h>
  #import <objc/runtime.h>
@@ -751,6 +754,8 @@
  #import "cocoa_window.h"
  #import "d3dmetal_objc.h"
 +#include "cx_tuner_config.h"
++
++#include "cx_frame_control.m.h"
  
  #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
  
@@ -770,6 +775,7 @@
 +        cx_display_sync_mode = tuning.sync;
 +        cx_force_display_sync = tuning.sync == 1;
 +        cx_drawable_limit = tuning.drawables;
++        cx_frame_fps = tuning.fps; cx_frame_stats = tuning.stats; cx_frame_pacing = tuning.pacing;
 +        return;
 +    }
 +    const char *sync = getenv("CX_METAL_DISPLAY_SYNC");
@@ -833,6 +839,21 @@
          /* CAMetalLayer's delegate is the WineMetalView that contains it (seems like that's always true
           * for an NSView backing layer).
           * That WineMetalView's parent is the client_surface->cocoa_view WineContentView, it has the
+@@ -67,7 +143,13 @@
+             }
+         }
+ 
+-        return [super nextDrawable];
++        if (!cx_frame_fps && !cx_frame_stats && !cx_frame_pacing) return [super nextDrawable];
++        CXFrameControl *control;
++        @synchronized(self) { control = cx_control_for_layer(self); }
++        [control waitForFrame];
++        id<CAMetalDrawable> drawable = [super nextDrawable];
++        [control track:drawable size:self.drawableSize];
++        return drawable;
+     }
+ 
+ @end
 --- a/dlls/winemac.drv/event.c
 +++ b/dlls/winemac.drv/event.c
 @@ -58,6 +58,7 @@
@@ -1123,3 +1144,214 @@
          break;
      case INPUT_KEYBOARD:
          wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
+--- /dev/null
++++ b/dlls/winemac.drv/cx_frame_control.h
+@@ -0,0 +1,59 @@
++/* COEditor frame clock. Call under the layer's lock; timestamps are monotonic. */
++#ifndef CX_FRAME_CONTROL_H
++#define CX_FRAME_CONTROL_H
++#include <math.h>
++#include <stdlib.h>
++#include <string.h>
++#define CX_FRAME_SAMPLES 512
++struct cx_frame_clock {
++    double last_start, latest, times[CX_FRAME_SAMPLES];
++    unsigned count, cursor;
++};
++struct cx_frame_summary {
++    unsigned count;
++    double fps, mean_ms, p95_ms, p99_ms, low1_fps, max_ms;
++    double intervals[CX_FRAME_SAMPLES];
++};
++static double cx_frame_deadline(const struct cx_frame_clock *s, double now, int fps)
++{
++    return fps > 0 && s->last_start > 0 ? fmax(now, s->last_start + 1.0 / fps) : now;
++}
++static void cx_frame_record(struct cx_frame_clock *s, double time)
++{
++    if (!isfinite(time) || time <= 0) return;
++    /* Backgrounding / resizing starts a new measurement window. */
++    if (s->latest && time > s->latest + 1.0) s->count = s->cursor = 0;
++    s->times[s->cursor++ % CX_FRAME_SAMPLES] = time;
++    if (s->count < CX_FRAME_SAMPLES) ++s->count;
++    s->latest = fmax(time, s->latest);
++}
++static int cx_frame_compare(const void *a, const void *b)
++{
++    double x = *(const double *)a, y = *(const double *)b;
++    return (x > y) - (x < y);
++}
++static struct cx_frame_summary cx_frame_summarize(const struct cx_frame_clock *s)
++{
++    struct cx_frame_summary out = {0};
++    double times[CX_FRAME_SAMPLES], ordered[CX_FRAME_SAMPLES], sum = 0, slow = 0;
++    memcpy(times, s->times, s->count * sizeof(double));
++    qsort(times, s->count, sizeof(double), cx_frame_compare);
++    for (unsigned i = 1; i < s->count; ++i) {
++        double delta = (times[i] - times[i-1]) * 1000;
++        if (delta <= 0 || delta > 1000) continue;
++        out.intervals[out.count++] = delta;
++        sum += delta;
++    }
++    if (!out.count) return out;
++    memcpy(ordered, out.intervals, out.count * sizeof(double));
++    qsort(ordered, out.count, sizeof(double), cx_frame_compare);
++    out.mean_ms = sum / out.count; out.fps = 1000 / out.mean_ms;
++    out.p95_ms = ordered[(unsigned)ceil(out.count * .95) - 1];
++    out.p99_ms = ordered[(unsigned)ceil(out.count * .99) - 1];
++    out.max_ms = ordered[out.count - 1];
++    unsigned n = (unsigned)ceil(out.count * .01);
++    for (unsigned i = out.count - n; i < out.count; ++i) slow += ordered[i];
++    out.low1_fps = 1000 * n / slow;
++    return out;
++}
++#endif
+--- /dev/null
++++ b/dlls/winemac.drv/cx_frame_control.m.h
+@@ -0,0 +1,146 @@
++/* COEditor: per-layer pacing and actual drawable-presentation feedback.
++ * Included by d3dmetal_objc.m. No exported ABI or app/helper signature changes. */
++#include "cx_frame_control.h"
++#import <CoreVideo/CoreVideo.h>
++#include <mach/mach_time.h>
++#include <mach/mach.h>
++static int cx_frame_fps, cx_frame_stats, cx_frame_pacing;
++
++@interface CXFrameControl : NSObject {
++    NSCondition *condition;
++    NSMutableDictionary *pending;
++    struct cx_frame_clock clock;
++    unsigned long sequence, timeouts;
++    double last_report, period;
++    NSString *output;
++}
++- (void)waitForFrame;
++- (void)track:(id<CAMetalDrawable>)drawable size:(CGSize)size;
++- (void)presented:(double)time token:(NSNumber *)token size:(CGSize)size;
++@end
++
++@implementation CXFrameControl
++- (id)init
++{
++    if ((self = [super init])) {
++        condition = [[NSCondition alloc] init]; pending = [[NSMutableDictionary alloc] init];
++        period = 1.0 / 60;
++        CVDisplayLinkRef link = NULL;
++        if (CVDisplayLinkCreateWithCGDisplay(CGMainDisplayID(), &link) == kCVReturnSuccess) {
++            CVTime nominal = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(link);
++            if (!(nominal.flags & kCVTimeIsIndefinite) && nominal.timeScale > 0 && nominal.timeValue > 0)
++                period = (double)nominal.timeValue / nominal.timeScale;
++            CVDisplayLinkRelease(link);
++        }
++        const char *prefix = getenv("WINEPREFIX");
++        if (cx_frame_stats && prefix) {
++            NSString *directory = [[NSString stringWithUTF8String:prefix] stringByAppendingPathComponent:@"drive_c/.cx-frame-stats"];
++            [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:NULL];
++            output = [[directory stringByAppendingPathComponent:[NSString stringWithFormat:@"%d-%p.json", getpid(), self]] copy];
++        }
++    }
++    return self;
++}
++- (void)dealloc
++{
++    [condition release]; [pending release]; [output release]; [super dealloc];
++}
++- (void)waitForFrame
++{
++    [condition lock];
++    double began = CACurrentMediaTime();
++    unsigned limit = cx_frame_pacing == 2 ? 1 : 2;
++    for (;;) {
++        double now = CACurrentMediaTime();
++        /* An acquired drawable may never be presented (resize/background/drop).
++         * Expire those tickets and bound feedback waiting; never stall the game
++         * indefinitely when callbacks stop or the GPU is heavily overloaded. */
++        NSArray *keys = [[pending allKeys] copy];
++        for (NSNumber *key in keys) if (now - [[pending objectForKey:key] doubleValue] > .25) [pending removeObjectForKey:key];
++        [keys release];
++        BOOL feedback = cx_frame_pacing && [pending count] >= limit;
++        double due = fmax(clock.last_start + period / (cx_frame_pacing == 2 ? 1 : 2), clock.latest + period * .25);
++        /* Presentation callbacks can reach us after the display deadline. Let
++         * the next frame start on its display cadence instead of serializing
++         * CPU/GPU work behind a late callback. The drawable pool still bounds
++         * work in flight. Cold/occluded surfaces use the bounded feedback wait. */
++        if (feedback && clock.latest > 0 && now - clock.latest < .25 && now >= due) feedback = NO;
++        if (feedback && now - began >= .1) { ++timeouts; feedback = NO; }
++        double delay = cx_frame_deadline(&clock, now, cx_frame_fps) - now;
++        if (!feedback && delay <= .000001) break;
++        if (!feedback && delay > .000001) {
++            static mach_timebase_info_data_t timebase;
++            static dispatch_once_t once;
++            dispatch_once(&once, ^{ mach_timebase_info(&timebase); });
++            uint64_t deadline = mach_absolute_time() + (uint64_t)(delay * 1e9 * timebase.denom / timebase.numer);
++            [condition unlock];
++            mach_wait_until(deadline);
++            [condition lock];
++            continue;
++        }
++        double wait = feedback ? fmin(.005, fmax(.00005, due - now)) : fmin(delay, .05);
++        [condition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:wait]];
++    }
++    clock.last_start = CACurrentMediaTime();
++    [condition unlock];
++}
++- (void)track:(id<CAMetalDrawable>)drawable size:(CGSize)size
++{
++    if (!drawable || (!cx_frame_stats && !cx_frame_pacing)) return;
++    [condition lock];
++    NSNumber *token = [NSNumber numberWithUnsignedLong:++sequence];
++    if (cx_frame_pacing) [pending setObject:@(CACurrentMediaTime()) forKey:token];
++    [condition unlock];
++    [drawable addPresentedHandler:^(id<MTLDrawable> done) {
++        [self presented:done.presentedTime token:token size:size];
++    }];
++}
++- (void)presented:(double)time token:(NSNumber *)token size:(CGSize)size
++{
++    @autoreleasepool {
++        [condition lock];
++        [pending removeObjectForKey:token]; [condition broadcast];
++        if (time > clock.latest && clock.latest > 0 && time - clock.latest >= .001)
++            period = fmin(period, time - clock.latest);
++        if (cx_frame_stats || cx_frame_pacing) cx_frame_record(&clock, time);
++        double now = CACurrentMediaTime();
++        if (!output || !isfinite(time) || time <= 0 || now - last_report < 1) { [condition unlock]; return; }
++        last_report = now;
++        struct cx_frame_summary s = cx_frame_summarize(&clock);
++        NSMutableArray *intervals = [NSMutableArray arrayWithCapacity:s.count];
++        for (unsigned i=0; i<s.count; ++i) [intervals addObject:@(s.intervals[i])];
++        NSDictionary *snapshot = @{
++            @"version": @1, @"profile": [NSString stringWithUTF8String:getprogname() ?: "unknown"],
++            @"pid": @(getpid()), @"last_presented": @(clock.latest), @"updated_at": @([[NSDate date] timeIntervalSince1970]),
++            @"width": @(size.width), @"height": @(size.height), @"samples": @(s.count),
++            @"fps": @(s.fps), @"mean_ms": @(s.mean_ms), @"p95_ms": @(s.p95_ms), @"p99_ms": @(s.p99_ms),
++            @"low1_fps": @(s.low1_fps), @"max_ms": @(s.max_ms), @"intervals_ms": intervals,
++            @"limit_fps": @(cx_frame_fps), @"pacing": @(cx_frame_pacing), @"feedback_timeouts": @(timeouts)
++        };
++        [condition unlock];
++        /* Serialization and atomic file replacement happen off the render and
++         * Metal callback threads; at most one small snapshot per second/layer. */
++        static dispatch_queue_t writer;
++        static dispatch_once_t once;
++        dispatch_once(&once, ^{ writer = dispatch_queue_create("local.coeditor.frame-stats", DISPATCH_QUEUE_SERIAL); });
++        dispatch_async(writer, ^{
++            @autoreleasepool {
++                NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:NULL];
++                [data writeToFile:output options:NSDataWritingAtomic error:NULL];
++            }
++        });
++    }
++}
++@end
++
++static CXFrameControl *cx_control_for_layer(CAMetalLayer *layer)
++{
++    static char key;
++    CXFrameControl *control = objc_getAssociatedObject(layer, &key);
++    if (!control) {
++        control = [[CXFrameControl alloc] init];
++        objc_setAssociatedObject(layer, &key, control, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++        [control release];
++    }
++    return control;
++}

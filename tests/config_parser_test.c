@@ -10,9 +10,9 @@ int main(void) {
  assert(mkdtemp(dir));snprintf(drive,sizeof(drive),"%s/drive_c",dir);assert(!mkdir(drive,0700));
  snprintf(path,sizeof(path),"%s/.cx-tuner.ini",drive);setenv("WINEPREFIX",dir,1);
  struct cx_tuner_settings t=cx_tuner_read();assert(!t.loaded);
- FILE *f=fopen(path,"w");assert(f);fputs("[CS2.EXE]\nqueue=1\ndrawables=2\nsync=1\n[global]\nmouse=1\nwheel=0\nqueue=3\nsync=0\ndrawables=3\n[other.exe]\nmouse=0\nwheel=1\nqueue=0\ndrawables=9\n",f);fclose(f);
- t=cx_tuner_read();assert(t.loaded && t.mouse==1 && t.wheel==0 && t.queue==1 && t.drawables==2 && t.sync==1);
- test_process="other.exe";t=cx_tuner_read();assert(t.mouse==0 && t.wheel==1 && t.queue==0 && t.drawables==3 && t.sync==0);
- test_process="steamwebhelper.exe";t=cx_tuner_read();assert(t.sync==-1 && t.drawables==0 && t.queue==0 && t.wheel==0);
+ FILE *f=fopen(path,"w");assert(f);fputs("[CS2.EXE]\nqueue=1\nfps=90\npacing=2\ndrawables=2\nsync=1\n[global]\nmouse=1\nwheel=0\nqueue=16\nfps=120\nstats=1\npacing=1\nsync=0\ndrawables=3\n[other.exe]\nmouse=0\nwheel=1\nqueue=0\ndrawables=9\n",f);fclose(f);
+ t=cx_tuner_read();assert(t.loaded && t.mouse==1 && t.wheel==0 && t.queue==1 && t.drawables==2 && t.sync==1 && t.fps==90 && t.pacing==2 && t.stats==1);
+ test_process="other.exe";t=cx_tuner_read();assert(t.mouse==0 && t.wheel==1 && t.queue==0 && t.drawables==3 && t.sync==0 && t.fps==120 && t.stats==1 && t.pacing==1);
+ test_process="steamwebhelper.exe";t=cx_tuner_read();assert(t.sync==-1 && t.drawables==0 && t.queue==0 && t.wheel==0 && t.fps==0 && t.stats==0 && t.pacing==0);
  unlink(path);rmdir(drive);rmdir(dir);puts("PASS: native configuration, inheritance, input switches, invalid values and Steam graphics bypass");return 0;
 }

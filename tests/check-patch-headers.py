@@ -6,6 +6,6 @@ root=Path(__file__).resolve().parents[1]
 manifest=json.loads((root/'patches/wine-26.3/files.json').read_text())
 for item in manifest['files']:
     name=Path(item['path']).name
-    if name in ('cx_tuner_config.h','mouse_fraction.h','wheel_raw.h'):
+    if name in ('cx_tuner_config.h','mouse_fraction.h','wheel_raw.h','cx_frame_control.h'):
         assert hashlib.sha256((root/'tests'/name).read_bytes()).hexdigest()==item['after'], name
 print('PASS: test headers match patched Wine sources')

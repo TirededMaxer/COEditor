@@ -2,7 +2,7 @@
 
 ## 现有环境
 
-已经使用本项目补丁的用户，只需替换 COEditor.app。配置、组件备份、运行时与游戏留在原处。应用的 Bundle ID 仍为 `local.crossover.tuner`，命令行可执行文件名仍为 `CrossOverTuner`。
+从 1.3 升级到 1.4，需要同时更新 COEditor.app 与匹配的 `winemac.so` / 维护 payload。旧驱动不包含新帧控制功能，界面会禁用对应选项。帧驱动安装完成后，在本机 manifest 写入 `frameControlVersion: 1`；注册新游戏时应用保留这个能力字段。配置、组件备份、运行时与游戏留在原处。应用的 Bundle ID 仍为 `local.crossover.tuner`，命令行可执行文件名仍为 `CrossOverTuner`。
 
 原生应用可独立编译；操作 Steam 容器还需要本节所述的本地运行环境。本项目当前不是通用的 CrossOver 一键安装器。
 
@@ -15,7 +15,7 @@ python3 scripts/apply-wine-patch.py /path/to/wine-source
 python3 scripts/apply-wine-patch.py /path/to/wine-source --verify
 ```
 
-脚本先核对 19 个文件的 SHA-256，再 dry-run、应用补丁、校验结果。发现版本不一致或已有改动会停止。补丁包含原生鼠标、小数累计、HID 滚轮、Metal 参数、Steam 辅助进程 Dock 控制及配置读取。
+脚本先核对 21 个文件的 SHA-256，再 dry-run、应用补丁、校验结果。发现版本不一致或已有改动会停止。补丁包含原生鼠标、小数累计、HID 滚轮、Metal 参数、Steam 辅助进程 Dock 控制及配置读取、帧控制和呈现统计。
 
 修改涉及用户驱动 ABI 与服务端输入分发：`winemac.so`、`win32u.so`、`ntdll.so` 和 `wineserver` 应来自同一套构建。不要单独把驱动塞入任意 Wine 版本。`server_protocol.h` 与 `protocol.def` 已同步保存在补丁中，新增标志不改变请求结构布局。
 
@@ -102,3 +102,26 @@ HID 滚轮需要为**实际启动游戏的入口**授予 macOS 输入监控权�
 ```
 
 打包只包含本项目应用、LICENSE、安装说明及“应用程序”快捷入口，不携带本机容器或运行时。通过 `shasum -a 256 -c build/SHA256SUMS` 校验产物。
+
+## 呈现控制的局部构建与验证
+
+若已有同 ABI 的 CrossOver 26.3 Wine 构建，可将新补丁应用到另一份匹配源码，保留原构建目录，并只替换 Cocoa 对象后重新链接：
+
+```sh
+python3 scripts/build-frame-driver.py --wine-source /path/to/existing-wine \
+  --wine-build /path/to/existing-build --patched-source /path/to/new-patched-wine \
+  --output /path/to/new-output
+```
+
+已有 Sevoflurane 窗口隐藏集成时，额外传入 `--compat-patch /path/to/sevoflurane-crossover-ui.patch`，保留那三份 Cocoa 修改。该参数使用用户 fork `Tools/crossover-ui/` 中的兼容补丁；不替换应用/helper，不更改输入监控签名。导出 ABI 和组件签名必须校验，再更新本地 payload/manifest；瓶中进程必须先停止。
+
+真实 Metal 验证会短暂打开本地渲染窗口，运行限帧、两档提交节奏以及丢弃 drawable 的回退检查：
+
+```sh
+xcrun clang -fblocks -I/path/to/new-patched-wine/dlls/winemac.drv \
+  tests/metal_frame_probe.m -o build/metal_frame_probe \
+  -framework AppKit -framework QuartzCore -framework Metal -framework CoreVideo
+build/metal_frame_probe
+```
+
+这验证本机真实 Metal 呈现链路；游戏转换链路与实际游戏体验需要分别验证。

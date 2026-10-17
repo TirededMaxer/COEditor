@@ -6,3 +6,5 @@
 - Metal drawable 范围依据 [Apple CAMetalLayer.maximumDrawableCount](https://developer.apple.com/documentation/quartzcore/cametallayer/maximumdrawablecount) 和本地 SDK。
 - 图标由 `Resources/generate-icon.swift` 使用 AppKit 和系统 SF Symbol `slider.horizontal.3` 生成；系统符号及 Apple 框架相关权利属于 Apple，项目许可证不重新授予这些第三方权利。
 - CrossOver、Steam、Sevoflurane 等名称属于各自项目或权利人。本项目不授予商业 CrossOver 的使用许可。
+
+- 实际呈现统计使用 Apple `MTLDrawable.presentedTime` / `addPresentedHandler`，提交节奏使用 CoreVideo 刷新周期和呈现反馈；不携带 Apple 框架。

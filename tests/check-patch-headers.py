@@ -9,3 +9,10 @@ for item in manifest['files']:
     if name in ('cx_tuner_config.h','mouse_fraction.h','wheel_raw.h','cx_frame_control.h'):
         assert hashlib.sha256((root/'tests'/name).read_bytes()).hexdigest()==item['after'], name
 print('PASS: test headers match patched Wine sources')
+
+bridge=next(i for i in manifest['files'] if i['path'].endswith('/wheel_bridge.h'))
+assert hashlib.sha256((root/'Sources/WheelBridge/wheel_bridge.h').read_bytes()).hexdigest()==bridge['after']
+patch=(root/'patches/wine-26.3/coeditor.patch').read_text()
+client=(root/'Sources/WheelBridge/wine_client.m.inc').read_text()
+assert all('+'+line in patch for line in client.splitlines() if line), 'Wine client source drift'
+print('PASS: shared bridge layout and Wine client match shipped patch')

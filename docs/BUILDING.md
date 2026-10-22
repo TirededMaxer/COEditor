@@ -141,3 +141,15 @@ build/metal_frame_probe
 ```
 
 这验证本机真实 Metal 呈现链路；游戏转换链路与实际游戏体验需要分别验证。
+
+## 1.5 独立滚轮组件与已有运行时升级
+
+`build-app.sh` 在云端编译并签名 `COEditor Wheel.app`，放入 DMG 的应用资源中。首次安装由用户确认后调用 `--install-wheel-helper --request-access`；该操作建立独立用户 LaunchAgent 并向系统申请权限，不写 TCC 数据库。协议 1 组件有安装收据，后续保留原二进制和签名。
+
+针对已经验证的相同 26.3 引擎，可从同一提交的 Wine artifact 提取 `winemac.so`，核对云端来源、签名、SHA256 和 ABI 导出，停止 Steam 容器及其 Wine server 后执行：
+
+```sh
+python3 scripts/install-wheel-driver.py /path/to/winemac.so --sha256 VERIFIED_SHA256
+```
+
+脚本仅更新驱动及维护 payload/清单，保留一个回滚驱动；现有 ntdll、win32u、D3DMetal、游戏、存档和 INI 不变。驱动包含固定版本的 Sevoflurane Steam UI 隐藏补丁；没有 `SEVO_OWNER_PID` 的普通 CrossOver 窗口不受其影响。不能跨 Wine ABI 或主版本使用。首次从原始 Wine 建立环境，仍需按上文部署相互匹配的完整组件。

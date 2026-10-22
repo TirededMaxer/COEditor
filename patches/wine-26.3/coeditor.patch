@@ -88,7 +88,17 @@
  	cocoa_opengl.m \
 --- a/dlls/winemac.drv/cocoa_app.h
 +++ b/dlls/winemac.drv/cocoa_app.h
-@@ -69,6 +69,9 @@
+@@ -21,6 +21,9 @@
+ #import <AppKit/AppKit.h>
+ 
+ #include "macdrv_cocoa.h"
++
++extern bool sevo_ui_suppressed(void);
++extern void sevo_ui_record(NSString *kind, NSWindow *window);
+ 
+ #define ERR(...) do { if (macdrv_err_on) LogError(__func__, __VA_ARGS__); } while (false)
+ 
+@@ -69,6 +72,9 @@
  
      NSTimeInterval lastScrollTime;
      double accumScrollX, accumScrollY;
@@ -100,7 +110,7 @@
      NSMutableDictionary* latentDisplayModes;
 --- a/dlls/winemac.drv/cocoa_app.m
 +++ b/dlls/winemac.drv/cocoa_app.m
-@@ -23,6 +23,13 @@
+@@ -23,6 +23,14 @@
  #import "cocoa_event.h"
  #import "cocoa_window.h"
  #import "cocoa_icon_utils.h"
@@ -108,16 +118,42 @@
 +#include "wheel_raw.h"
 +#include "cx_tuner_config.h"
 +#include <unistd.h>
-+#import <IOKit/hid/IOHIDManager.h>
-+#import <IOKit/hid/IOHIDKeys.h>
-+#import <IOKit/hidsystem/IOHIDLib.h>
++#include "wheel_bridge.h"
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <fcntl.h>
  
  #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
  
-@@ -56,6 +63,19 @@
+@@ -54,7 +62,43 @@
+ static NSString* const WineExternalQuitNotificationWineConfigDirKey = @"WineConfigDir";
+ static NSString* const WineExternalQuitNotificationWinePrefixKey = @"WinePrefix";
  
++#include "sevo_ui_policy.h"
++
++bool sevo_ui_suppressed(void)
++{
++    return sevo_ui_policy();
++}
++
++void sevo_ui_record(NSString *kind, NSWindow *window)
++{
++    NSString *home = NSHomeDirectory();
++    NSString *path = [home stringByAppendingPathComponent:@"Library/Logs/Sevoflurane-windows.log"];
++    FILE *record = fopen([path fileSystemRepresentation], "a");
++    if (record)
++    {
++        NSString *title = window ? [window title] : @"";
++        NSSize size = window ? [window frame].size : NSZeroSize;
++        fprintf(record, "%s suppressed pid=%d exe=%s kind=%s title=%s size=%.0fx%.0f\n",
++                [[[NSDate date] description] UTF8String], getpid(), sevo_ui_executable(),
++                [kind UTF8String], [title UTF8String], size.width, size.height);
++        fclose(record);
++    }
++}
++
  bool macdrv_err_on;
- 
++
 +/* Sevoflurane owns Steam's visible interface. Keep only its bottled client
 + * processes out of the Dock; games and other Windows programs stay normal. */
 +static bool cx_hide_steam_dock(void)
@@ -130,163 +166,130 @@
 +            !strcasecmp(name, "steamwebhelper.exe") ||
 +            !strcasecmp(name, "steamservice.exe"));
 +}
-+
+ 
  
  #if !defined(MAC_OS_VERSION_14_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_14_0
- @interface NSApplication (CooperativeActivationSelectorsForOldSDKs)
-@@ -119,6 +139,7 @@
+@@ -119,12 +163,96 @@
  @property (retain, nonatomic) WineWindow* mouseCaptureWindow;
  
      - (void) setupObservations;
-+    - (void) postRawWheelX:(int)x y:(int)y;
++    - (BOOL) postRawWheelX:(int)x y:(int)y;
++    - (void) handleNativeScrollWheel:(NSEvent*)theEvent;
      - (void) applicationDidBecomeActive:(NSNotification *)notification;
      - (void) handleApplicationShouldTerminateReply:(BOOL)reply;  /* CW Hack 22310 */
  
-@@ -126,6 +147,117 @@
+     static void PerformRequest(void *info);
  
  @end
- 
 +
-+/* Optional nonexclusive physical wheel reader, active only in the foreground.
-+ * Permission requests require the explicit request option or one-time marker. */
-+static IOHIDManagerRef cx_raw_wheel_manager;
-+static CFMutableSetRef cx_raw_wheel_devices;
 +
-+static bool cx_hid_wheel_element(IOHIDElementRef element)
++/* Physical wheel access belongs to the separately authorized, retained reader.
++ * Wine never requests global input permission. All state is per process. */
++static const struct cx_wheel_bridge *cx_wheel_shared;
++static CFRunLoopTimerRef cx_wheel_timer;
++static uint64_t cx_wheel_cursor, cx_wheel_delivered;
++static uint32_t cx_wheel_reader_pid;
++static int cx_wheel_last_state = -1;
++
++static bool cx_wheel_open_bridge(void)
 +{
-+    int x, y;
-+    return macdrv_hid_wheel_delta(IOHIDElementGetUsagePage(element),
-+        IOHIDElementGetUsage(element), IOHIDElementIsRelative(element), 0, &x, &y);
++    char path[4096];
++    struct stat st;
++    const char *home = getenv("HOME");
++    int fd;
++    if (cx_wheel_shared) return true;
++    if (!home) return false;
++    snprintf(path, sizeof(path), "%s/Library/Application Support/CrossOver/CustomRuntimes/.tuner-support/Wheel/wheel-v1.bin", home);
++    fd = open(path, O_RDONLY | O_NOFOLLOW);
++    if (fd < 0) return false;
++    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != getuid() ||
++        st.st_size != sizeof(struct cx_wheel_bridge) || (st.st_mode & 077))
++    { close(fd); return false; }
++    void *mapping = mmap(NULL, sizeof(struct cx_wheel_bridge), PROT_READ, MAP_SHARED, fd, 0);
++    close(fd);
++    if (mapping == MAP_FAILED) return false;
++    cx_wheel_shared = mapping;
++    cx_wheel_cursor = __atomic_load_n(&cx_wheel_shared->sequence, __ATOMIC_ACQUIRE);
++    return true;
 +}
 +
-+static void cx_hid_wheel_matched(void *context, IOReturn result, void *sender, IOHIDDeviceRef device)
++static bool cx_wheel_drain(void)
 +{
-+    CFArrayRef elements = IOHIDDeviceCopyMatchingElements(device, NULL, kIOHIDOptionsTypeNone);
-+    if (!elements) return;
-+    for (CFIndex i = 0; i < CFArrayGetCount(elements); i++)
-+        if (cx_hid_wheel_element((IOHIDElementRef)CFArrayGetValueAtIndex(elements, i)))
-+        {
-+            CFSetAddValue(cx_raw_wheel_devices, device);
-+            fprintf(stderr, "[CXWheelHID] physical wheel attached; devices=%ld\n",
-+                    (long)CFSetGetCount(cx_raw_wheel_devices));
-+            break;
-+        }
-+    CFRelease(elements);
-+}
-+
-+static void cx_hid_wheel_removed(void *context, IOReturn result, void *sender, IOHIDDeviceRef device)
-+{
-+    CFSetRemoveValue(cx_raw_wheel_devices, device);
-+}
-+
-+static void cx_hid_wheel_value(void *context, IOReturn result, void *sender, IOHIDValueRef value)
-+{
-+    IOHIDElementRef element = IOHIDValueGetElement(value);
-+    int x, y;
-+    if (result || ![NSApp isActive] ||
-+        !CFSetContainsValue(cx_raw_wheel_devices, IOHIDElementGetDevice(element))) return;
-+    if (macdrv_hid_wheel_delta(IOHIDElementGetUsagePage(element),
-+        IOHIDElementGetUsage(element), IOHIDElementIsRelative(element),
-+        IOHIDValueGetIntegerValue(value), &x, &y) && (x || y))
++    uint64_t now = cx_wheel_now();
++    bool live = cx_wheel_open_bridge() && cx_wheel_live(cx_wheel_shared, now);
++    int state = live ? 1 : 0;
++    if (state != cx_wheel_last_state)
 +    {
-+
-+        [[WineApplicationController sharedController] postRawWheelX:x y:y];
-+        if (getenv("CX_WHEEL_TRACE") && !strcmp(getenv("CX_WHEEL_TRACE"), "1"))
-+            fprintf(stderr, "[CXWheelHID] Windows delta=%d,%d\n", x, y);
++        fprintf(stderr, "[CXWheelBridge] reader=%s pid=%d; native fallback=%s\n",
++            live ? "ready" : "unavailable", getpid(), live ? "on missed physical delivery" : "active");
++        cx_wheel_last_state = state;
 +    }
++    if (!live) { cx_wheel_delivered = 0; return false; }
++    if (cx_wheel_reader_pid != cx_wheel_shared->pid)
++    {
++        cx_wheel_reader_pid = cx_wheel_shared->pid;
++        cx_wheel_delivered = 0;
++        cx_wheel_cursor = 0;
++    }
++    if (![NSApp isActive]) return false;
++    struct cx_wheel_event e;
++    while (cx_wheel_next(cx_wheel_shared, &cx_wheel_cursor, getpid(), now, &e))
++    {
++        if ([[WineApplicationController sharedController] postRawWheelX:e.x y:e.y])
++        {
++            bool first = !cx_wheel_delivered;
++            cx_wheel_delivered = e.time_ns;
++            if (first) fprintf(stderr, "[CXWheelBridge] physical delivery confirmed pid=%d delta=%d,%d\n",getpid(),e.x,e.y);
++        }
++    }
++    return true;
 +}
-+
++static void cx_wheel_tick(CFRunLoopTimerRef timer, void *context) { cx_wheel_drain(); }
 +static void cx_stop_raw_wheel(void)
 +{
-+    if (!cx_raw_wheel_manager) return;
-+    IOHIDManagerUnscheduleFromRunLoop(cx_raw_wheel_manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-+    IOHIDManagerClose(cx_raw_wheel_manager, kIOHIDOptionsTypeNone);
-+    CFRelease(cx_raw_wheel_manager);
-+    cx_raw_wheel_manager = NULL;
-+    CFRelease(cx_raw_wheel_devices);
-+    cx_raw_wheel_devices = NULL;
++    if (cx_wheel_timer) { CFRunLoopTimerInvalidate(cx_wheel_timer); CFRelease(cx_wheel_timer); cx_wheel_timer = NULL; }
++    cx_wheel_delivered = 0;
++    if (cx_wheel_shared) cx_wheel_cursor = __atomic_load_n(&cx_wheel_shared->sequence, __ATOMIC_ACQUIRE);
 +}
-+
 +static void cx_start_raw_wheel(void)
 +{
 +    struct cx_tuner_settings tuning = cx_tuner_read();
 +    const char *mode = tuning.loaded ? (tuning.wheel ? "hid" : "off") : getenv("CX_WHEEL_INPUT");
-+    IOReturn status;
-+    if (tuning.loaded && !tuning.wheel) { cx_stop_raw_wheel(); return; }
-+    if (cx_raw_wheel_manager || !mode || strcmp(mode, "hid")) return;
-+    if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted)
-+    {
-+        static bool requested_access;
-+        const char *request = getenv("CX_WHEEL_REQUEST_ACCESS");
-+        /* Enabled only after the user authorizes displaying the system prompt.
-+         * This API never grants access itself; macOS owns the decision. */
-+        char marker[4096] = {0};
-+        const char *prefix = getenv("WINEPREFIX");
-+        bool marker_present = false;
-+        if (prefix && getprogname() && !strcasecmp(getprogname(), "cs2.exe"))
-+        {
-+            snprintf(marker, sizeof(marker), "%s/drive_c/.cx-input-access-request", prefix);
-+            marker_present = !access(marker, F_OK);
-+        }
-+        if (((request && !strcmp(request, "1")) || marker_present) && !requested_access)
-+        {
-+            requested_access = true;
-+            if (marker_present) unlink(marker);
-+            IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
-+        }
-+        fprintf(stderr, "[CXWheelHID] Input Monitoring permission required; native wheel unchanged\n");
-+        return;
-+    }
-+    cx_raw_wheel_manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-+    if (!cx_raw_wheel_manager) return;
-+    cx_raw_wheel_devices = CFSetCreateMutable(kCFAllocatorDefault, 0, &kCFTypeSetCallBacks);
-+    IOHIDManagerSetDeviceMatching(cx_raw_wheel_manager, (CFDictionaryRef)@{
-+        @kIOHIDDeviceUsagePageKey: @1, @kIOHIDDeviceUsageKey: @2 });
-+    IOHIDManagerSetInputValueMatchingMultiple(cx_raw_wheel_manager, (CFArrayRef)@[
-+        @{ @kIOHIDElementUsagePageKey: @1, @kIOHIDElementUsageKey: @0x38 },
-+        @{ @kIOHIDElementUsagePageKey: @0x0c, @kIOHIDElementUsageKey: @0x238 } ]);
-+    IOHIDManagerRegisterDeviceMatchingCallback(cx_raw_wheel_manager, cx_hid_wheel_matched, NULL);
-+    IOHIDManagerRegisterDeviceRemovalCallback(cx_raw_wheel_manager, cx_hid_wheel_removed, NULL);
-+    IOHIDManagerRegisterInputValueCallback(cx_raw_wheel_manager, cx_hid_wheel_value, NULL);
-+    IOHIDManagerScheduleWithRunLoop(cx_raw_wheel_manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-+    status = IOHIDManagerOpen(cx_raw_wheel_manager, kIOHIDOptionsTypeNone);
-+    if (status)
-+    {
-+        fprintf(stderr, "[CXWheelHID] open failed=%#x; native wheel unchanged\n", status);
-+        cx_stop_raw_wheel();
-+    }
-+    else fprintf(stderr, "[CXWheelHID] physical wheel reader opened (nonexclusive)\n");
++    if (!mode || strcmp(mode, "hid")) { cx_stop_raw_wheel(); return; }
++    if (cx_wheel_timer) return;
++    cx_wheel_delivered = 0;
++    cx_wheel_open_bridge();
++    if (cx_wheel_shared) cx_wheel_cursor = __atomic_load_n(&cx_wheel_shared->sequence, __ATOMIC_ACQUIRE);
++    cx_wheel_timer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent(), 0.002, 0, 0, cx_wheel_tick, NULL);
++    CFRunLoopAddTimer(CFRunLoopGetMain(), cx_wheel_timer, kCFRunLoopCommonModes);
 +}
  
- @implementation WineApplicationController
  
-@@ -172,6 +304,17 @@
+ @implementation WineApplicationController
+@@ -172,6 +300,14 @@
          if (self != nil)
          {
              CFRunLoopSourceContext context = { 0 };
 +
-+            if (cx_hide_steam_dock())
++            if (cx_hide_steam_dock() || sevo_ui_suppressed())
 +            {
 +                if ([NSApp activationPolicy] == NSApplicationActivationPolicyRegular)
 +                    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 +                fprintf(stderr, "[CXDock] keeping %s out of the Dock\n", getprogname());
 +            }
 +
-+            if (getenv("CX_WHEEL_TRACE") && !strcmp(getenv("CX_WHEEL_TRACE"), "1"))
-+                fprintf(stderr, "[CXWheelHID] process=%s input_monitoring=%d (0=granted)\n",
-+                        getprogname(), IOHIDCheckAccess(kIOHIDRequestTypeListenEvent));
              context.perform = PerformRequest;
              requestSource = CFRunLoopSourceCreate(NULL, 0, &context);
              if (!requestSource)
-@@ -294,6 +437,15 @@
+@@ -294,6 +430,15 @@
  
      - (void) transformProcessToForeground:(BOOL)activateIfTransformed
      {
-+        if (cx_hide_steam_dock())
++        if (cx_hide_steam_dock() || sevo_ui_suppressed())
 +        {
 +            if ([NSApp activationPolicy] == NSApplicationActivationPolicyRegular)
 +                [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-+            if (activateIfTransformed)
++            if (activateIfTransformed && !sevo_ui_suppressed())
 +                [self tryToActivateIgnoringOtherApps:YES];
 +            return;
 +        }
@@ -294,20 +297,20 @@
          if ([NSApp activationPolicy] != NSApplicationActivationPolicyRegular)
          {
              NSMenu* mainMenu;
-@@ -1737,6 +1889,28 @@
+@@ -1737,7 +1882,51 @@
          forceNextMouseMoveAbsolute = TRUE;
      }
  
-+    - (void) postRawWheelX:(int)x y:(int)y
++    - (BOOL) postRawWheelX:(int)x y:(int)y
 +    {
 +        WineWindow *window = mouseCaptureWindow;
 +        NSPoint location = [NSEvent mouseLocation];
 +        if (!window)
 +            window = (WineWindow *)[NSApp windowWithWindowNumber:
 +                [NSWindow windowNumberAtPoint:location belowWindowWithWindowNumber:0]];
-+        if (![window isKindOfClass:[WineWindow class]]) return;
++        if (![window isKindOfClass:[WineWindow class]]) return NO;
 +        if (!mouseCaptureWindow && !NSMouseInRect(location, [window contentRectForFrameRect:window.frame], NO))
-+            return;
++            return NO;
 +
 +        CGPoint point = cgpoint_win_from_mac(NSPointToCGPoint([self flippedMouseLocation:location]));
 +        macdrv_event *event = macdrv_create_event(MOUSE_SCROLL, window);
@@ -318,27 +321,39 @@
 +        event->mouse_scroll.y_scroll = y;
 +        [window.queue postEvent:event];
 +        macdrv_release_event(event);
++        return YES;
 +    }
 +
      - (void) handleScrollWheel:(NSEvent*)theEvent
++    {
++        /* HID and AppKit arrive on independent paths. Physical input is posted
++         * immediately; hold only its native copy briefly to cover either order.
++         * A detected device alone never licenses dropping a native event. */
++        if (cx_wheel_timer && ![theEvent phase] && ![theEvent momentumPhase] && cx_wheel_drain())
++        {
++            uint64_t event_ns = cx_wheel_now();
++            if (cx_wheel_claimed(cx_wheel_delivered, event_ns, cx_wheel_now())) return;
++            NSEvent *native = [theEvent retain];
++            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
++                bool live = cx_wheel_timer && cx_wheel_drain();
++                if ([NSApp isActive] && (!live || !cx_wheel_claimed(cx_wheel_delivered, event_ns, cx_wheel_now())))
++                    [self handleNativeScrollWheel:native];
++                [native release];
++            });
++            return;
++        }
++        [self handleNativeScrollWheel:theEvent];
++    }
++
++    - (void) handleNativeScrollWheel:(NSEvent*)theEvent
      {
          WineWindow* window;
-@@ -1778,16 +1952,27 @@
+ 
+@@ -1778,16 +1967,16 @@
                  event->mouse_scroll.y = floor(pt.y);
                  event->mouse_scroll.time_ms = [self ticksForEventTime:[theEvent timestamp]];
  
 -                if (CGEventGetIntegerValueField(cgevent, kCGScrollWheelEventIsContinuous))
-+                /* A physical HID wheel has already been delivered directly.
-+                 * Drop its AppKit/Mos copy, including phase-less smoothing tails.
-+                 * Gesture phases still identify native trackpad scrolling. */
-+                if (macdrv_drop_native_wheel(cx_raw_wheel_devices ? CFSetGetCount(cx_raw_wheel_devices) : 0,
-+                                             [theEvent phase], [theEvent momentumPhase]))
-+                {
-+
-+                    macdrv_release_event(event);
-+                    return;
-+                }
-+
 +                if ([theEvent hasPreciseScrollingDeltas])
                  {
                      continuous = TRUE;
@@ -355,7 +370,7 @@
                  }
                  else
                  {
-@@ -1801,8 +1986,8 @@
+@@ -1801,8 +1990,8 @@
                          CFRelease(source);
                      }
  
@@ -366,7 +381,7 @@
                  }
  
                  /* Mac: negative is right or down, positive is left or up.
-@@ -1818,8 +2003,24 @@
+@@ -1818,8 +2007,24 @@
  
                  if (use_precise_scrolling)
                  {
@@ -393,7 +408,15 @@
  
                      if (!continuous)
                      {
-@@ -2432,6 +2633,7 @@
+@@ -2177,6 +2382,7 @@
+         NSString *configDir, *prefix;
+         NSDictionary *userInfo;
+ 
++        if (sevo_ui_suppressed()) return;
+         if ([NSApp isActive]) return;  /* Nothing to do. */
+ 
+         if (!ignore ||
+@@ -2432,6 +2638,7 @@
       */
      - (void)applicationDidBecomeActive:(NSNotification *)notification
      {
@@ -401,7 +424,7 @@
          NSNumber* displayID;
          NSDictionary* modesToRealize = [latentDisplayModes autorelease];
  
-@@ -2588,6 +2790,7 @@
+@@ -2588,6 +2795,7 @@
  
      - (void)applicationWillResignActive:(NSNotification *)notification
      {
@@ -1016,17 +1039,18 @@
 +#endif
 --- /dev/null
 +++ b/dlls/winemac.drv/wheel_raw.h
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,21 @@
 +/* Local physical wheel translation; LGPL-2.1-or-later, like winemac.drv. */
 +#ifndef MACDRV_WHEEL_RAW_H
 +#define MACDRV_WHEEL_RAW_H
 +#include <stdbool.h>
 +#include <stdint.h>
++#include <limits.h>
 +static inline bool macdrv_hid_wheel_delta(unsigned int page, unsigned int usage,
 +                                         bool relative, int64_t value, int *x, int *y)
 +{
 +    *x = *y = 0;
-+    if (!relative) return false;
++    if (!relative || value > INT_MAX / 120 || value < INT_MIN / 120) return false;
 +    if (page == 1 && usage == 0x38) *y = value * 120;
 +    else if (page == 0x0c && usage == 0x238) *x = value * 120;
 +    else return false;
@@ -1355,3 +1379,173 @@
 +    }
 +    return control;
 +}
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -1000,6 +1000,36 @@
+ 
+ 
+ @implementation WineWindow
++
++    - (void) orderWindow:(NSWindowOrderingMode)place relativeTo:(NSInteger)other
++    {
++        if (place != NSWindowOut && sevo_ui_suppressed())
++        {
++            sevo_ui_record(@"orderWindow", self);
++            return;
++        }
++        [super orderWindow:place relativeTo:other];
++    }
++
++    - (void) orderFront:(id)sender
++    {
++        if (sevo_ui_suppressed())
++        {
++            sevo_ui_record(@"orderFront", self);
++            return;
++        }
++        [super orderFront:sender];
++    }
++
++    - (void) orderFrontRegardless
++    {
++        if (sevo_ui_suppressed())
++        {
++            sevo_ui_record(@"orderFrontRegardless", self);
++            return;
++        }
++        [super orderFrontRegardless];
++    }
+ 
+     static WineWindow* causing_becomeKeyWindow;
+ 
+@@ -1732,6 +1762,11 @@
+        its frame intersects any screen. */
+     - (void) orderBelow:(WineWindow*)prev orAbove:(WineWindow*)next activate:(BOOL)activate
+     {
++        if (sevo_ui_suppressed())
++        {
++            sevo_ui_record(@"show", self);
++            return;
++        }
+         WineApplicationController* controller = [WineApplicationController sharedController];
+         if (![self isMiniaturized])
+         {
+--- a/dlls/winemac.drv/cocoa_status_item.m
++++ b/dlls/winemac.drv/cocoa_status_item.m
+@@ -53,7 +53,10 @@
+         self = [super initWithFrame:NSMakeRect(0, 0, thickness, thickness)];
+         if (self)
+         {
+-            item = [[statusBar statusItemWithLength:NSSquareStatusItemLength] retain];
++            if (sevo_ui_suppressed())
++                sevo_ui_record(@"tray", nil);
++            else
++                item = [[statusBar statusItemWithLength:NSSquareStatusItemLength] retain];
+             // This is a retain cycle which is broken in -removeFromStatusBar.
+             [item setView:self];
+ 
+--- /dev/null
++++ b/dlls/winemac.drv/sevo_ui_policy.h
+@@ -0,0 +1,40 @@
++/* Sevoflurane's CrossOver compatibility path. This is evaluated after
++ * Wine has assigned the Windows executable name. No owner means normal Wine. */
++#include <crt_externs.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++
++static const char *sevo_ui_executable(void)
++{
++    char **arguments = *_NSGetArgv();
++    const char *name, *at;
++    if (!arguments || !arguments[0]) return "?";
++    name = arguments[0];
++    for (at = name; *at; ++at)
++        if (*at == '/' || *at == '\\') name = at + 1;
++    return name;
++}
++
++static int sevo_ui_policy(void)
++{
++    const char *owner = getenv("SEVO_OWNER_PID");
++    const char *enabled = getenv("CX_HIDE_STEAM_DOCK");
++    const char *name = sevo_ui_executable();
++    static const char *quiet[] = {
++        "steam.exe", "steamwebhelper.exe", "steamservice.exe",
++        "steamerrorreporter.exe", "steamerrorreporter64.exe", "explorer.exe",
++        "gldriverquery.exe", "gldriverquery64.exe",
++        "vulkandriverquery.exe", "vulkandriverquery64.exe",
++        "steamxboxutil.exe", "steamxboxutil64.exe",
++        "fossilize-replay.exe", "fossilize-replay64.exe",
++        "x64launcher.exe", "x86launcher.exe", "WriteMiniDump.exe",
++        "steam_monitor.exe", "secure_desktop_capture.exe", "drivers.exe",
++        "hardwareupdater.exe", "steamsysinfo.exe", "wineboot.exe"
++    };
++    unsigned i;
++    if (!owner || !*owner || !enabled || strcmp(enabled, "1")) return 0;
++    for (i = 0; i < sizeof(quiet) / sizeof(quiet[0]); ++i)
++        if (!strcasecmp(name, quiet[i])) return 1;
++    return 0;
++}
+--- /dev/null
++++ b/dlls/winemac.drv/wheel_bridge.h
+@@ -0,0 +1,59 @@
++/* COEditor wheel bridge protocol 1. Shared by arm64 reader and x86_64 Wine.
++ * A private, fixed-size ring carries wheel events only; no keyboard or movement.
++ * Keep the wire layout stable. One writer, lock-free release/acquire publication. */
++#ifndef CX_WHEEL_BRIDGE_H
++#define CX_WHEEL_BRIDGE_H
++#include <stdint.h>
++#include <stdbool.h>
++#include <time.h>
++#define CX_WHEEL_MAGIC UINT64_C(0x4358574845454c31)
++#define CX_WHEEL_CAPACITY 256
++#define CX_WHEEL_LEASE_NS UINT64_C(250000000)
++#define CX_WHEEL_TAIL_NS UINT64_C(1000000000)
++enum { CX_WHEEL_DENIED, CX_WHEEL_READY, CX_WHEEL_NO_DEVICE, CX_WHEEL_ERROR };
++struct cx_wheel_event { uint64_t sequence, time_ns; int32_t pid, x, y, reserved; };
++struct cx_wheel_bridge {
++    uint64_t magic, heartbeat_ns, sequence;
++    uint32_t version, state, devices, pid;
++    struct cx_wheel_event events[CX_WHEEL_CAPACITY];
++};
++static inline uint64_t cx_wheel_now(void) {
++    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
++    return (uint64_t)t.tv_sec * UINT64_C(1000000000) + t.tv_nsec;
++}
++static inline bool cx_wheel_live(const struct cx_wheel_bridge *b, uint64_t now) {
++    uint64_t tick;
++    if (!b || __atomic_load_n(&b->magic, __ATOMIC_ACQUIRE) != CX_WHEEL_MAGIC || b->version != 1) return false;
++    tick = __atomic_load_n(&b->heartbeat_ns, __ATOMIC_ACQUIRE);
++    return tick && now >= tick && now - tick < CX_WHEEL_LEASE_NS &&
++        __atomic_load_n(&b->state, __ATOMIC_ACQUIRE) == CX_WHEEL_READY && b->devices;
++}
++static inline void cx_wheel_publish(struct cx_wheel_bridge *b, int pid, int x, int y, uint64_t now) {
++    uint64_t seq = __atomic_load_n(&b->sequence, __ATOMIC_RELAXED) + 1;
++    struct cx_wheel_event *e = &b->events[seq % CX_WHEEL_CAPACITY];
++    __atomic_store_n(&e->sequence, 0, __ATOMIC_RELEASE);
++    e->time_ns = now; e->pid = pid; e->x = x; e->y = y; e->reserved = 0;
++    __atomic_store_n(&e->sequence, seq, __ATOMIC_RELEASE);
++    __atomic_store_n(&b->sequence, seq, __ATOMIC_RELEASE);
++}
++/* Cursor is advanced even for another PID; focus changes explicitly discard old events. */
++static inline bool cx_wheel_next(const struct cx_wheel_bridge *b, uint64_t *cursor,
++                                int pid, uint64_t now, struct cx_wheel_event *out) {
++    uint64_t end = __atomic_load_n(&b->sequence, __ATOMIC_ACQUIRE);
++    if (end < *cursor) *cursor = end; /* helper restarted */
++    if (end - *cursor > CX_WHEEL_CAPACITY) *cursor = end - CX_WHEEL_CAPACITY;
++    while (*cursor < end) {
++        uint64_t seq = ++*cursor;
++        const struct cx_wheel_event *e = &b->events[seq % CX_WHEEL_CAPACITY];
++        if (__atomic_load_n(&e->sequence, __ATOMIC_ACQUIRE) != seq) continue;
++        *out = *e;
++        if (__atomic_load_n(&e->sequence, __ATOMIC_ACQUIRE) != seq) continue;
++        if (out->pid == pid && out->time_ns <= now && now - out->time_ns < CX_WHEEL_LEASE_NS) return true;
++    }
++    return false;
++}
++static inline bool cx_wheel_claimed(uint64_t delivered, uint64_t event_ns, uint64_t now) {
++    return delivered && delivered <= now && now - delivered < CX_WHEEL_TAIL_NS &&
++        (delivered >= event_ns || event_ns - delivered < CX_WHEEL_TAIL_NS);
++}
++#endif

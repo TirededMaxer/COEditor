@@ -61,7 +61,7 @@ struct Component: Codable {
     var allowedBefore: [String]
     var optional: Bool?
 }
-struct InstallManifest: Codable { var runtime: String; var baseVersion: String; var components: [Component]; var frameControlVersion:Int? }
+struct InstallManifest: Codable { var runtime: String; var baseVersion: String; var components: [Component]; var frameControlVersion:Int?; var wheelBridgeVersion:Int? }
 struct MaintenanceResult: Codable {
     var ok: Bool
     var runtime: String
@@ -224,6 +224,7 @@ final class TunerModel: ObservableObject {
     @Published var showGamePicker = false
     @Published var showFrameStats = false
     @Published var supportsFrameControl = false
+    @Published var wheelStatus = ""
     private var savedFile = TuningFile.initial
     init(loadEnvironment:Bool = true) { if loadEnvironment { reload();check();refreshGames() } }
     var hasUnsavedChanges:Bool { file != savedFile }
@@ -293,7 +294,9 @@ final class TunerModel: ObservableObject {
         if file.sections[selected] == nil { selected="global" }
     }
     @discardableResult func save() -> Bool { do { try Storage.save(file);savedFile=file;message="已保存，重启对应游戏后生效";return true } catch {message="保存失败："+error.localizedDescription;return false} }
-    func check() { supportsFrameControl = (try? Storage.manifest().frameControlVersion) == 1;let r=Storage.maintain(repair:true);healthy=r.ok;environment="补丁引擎 \(r.runtime) · CrossOver \(r.installedCrossOver)\n"+r.notes.joined(separator:"\n") }
+    func refreshWheel() { wheelStatus = (try? Storage.manifest().wheelBridgeVersion) == 1 ? WheelReader.status():"滚轮驱动需要更新，尚未接入独立读取器" }
+    func setupWheel() { do {try WheelReader.promptSetup();refreshWheel()}catch {message=error.localizedDescription} }
+    func check() { refreshWheel();supportsFrameControl = (try? Storage.manifest().frameControlVersion) == 1;let r=Storage.maintain(repair:true);healthy=r.ok;environment="补丁引擎 \(r.runtime) · CrossOver \(r.installedCrossOver)\n"+r.notes.joined(separator:"\n") }
     func addGame(_ game:InstalledSteamGame,exe:GameExecutable) {
         let name=exe.profile
         if let old=bindings[name],old.executable != exe.path {message="另一个配置使用同名启动程序，暂时无法分别设置：\(name)";return}
@@ -397,6 +400,7 @@ struct TunerView:View {
                     Text("保留已验收的 macOS 原生处理手感；关闭后使用原引擎输入。").font(.caption).foregroundStyle(.secondary)
                     Toggle("滚轮刻度优化",isOn:model.binding("wheel")).disabled(!model.isGlobal && model.file.sections[model.selected]?["wheel"] == nil)
                     Text("实体鼠标按 Windows 刻度处理，触控板保留原生滚动。").font(.caption).foregroundStyle(.secondary)
+                    HStack(alignment:.top) {Image(systemName:model.wheelStatus.hasPrefix("滚轮读取器就绪") ? "checkmark.circle.fill":"exclamationmark.triangle.fill").foregroundStyle(model.wheelStatus.hasPrefix("滚轮读取器就绪") ? .green:.orange);Text(model.wheelStatus).font(.caption).textSelection(.enabled);Spacer();Button("设置滚轮组件…"){model.setupWheel()}}
                 }.frame(maxWidth:.infinity,alignment:.leading).padding(9)
             }
             HStack(alignment:.top) {Image(systemName:model.healthy ? "checkmark.circle.fill":"exclamationmark.triangle.fill").foregroundStyle(model.healthy ? .green:.orange);Text(model.environment).font(.caption).textSelection(.enabled);Spacer();Button("检查环境"){model.check()} }
@@ -405,6 +409,7 @@ struct TunerView:View {
         }.padding(22).frame(width:600).fixedSize(horizontal:false,vertical:true).disabled(model.busy)
         .background(GeometryReader{geometry in Color.clear.preference(key:ContentHeightKey.self,value:geometry.size.height)})
         }.frame(width:620,height:min(contentHeight,(NSScreen.main?.visibleFrame.height ?? 900)-70))
+        .onReceive(Timer.publish(every:2,on:.main,in:.common).autoconnect()){_ in model.refreshWheel()}
         .onPreferenceChange(ContentHeightKey.self){height in if abs(contentHeight-height)>1 {contentHeight=height;resize(height)}}
         .sheet(isPresented:$model.showFrameStats){FrameStatsView(profile:model.selected,name:model.label(model.selected))}
         .sheet(isPresented:$model.showGamePicker){GamePickerView(model:model)}
@@ -443,6 +448,13 @@ func runTests() throws {
     let restored=TuningFile(manual.serialized())
     try expect(restored.value("queue",in:"cs2.exe")==5 && restored.value("fps",in:"cs2.exe")==0 && restored.value("pacing",in:"cs2.exe")==0 && restored.value("stats",in:"cs2.exe")==1,"独立调整不得联动改写其他参数")
     try expect(TuningFile.initial.value("sync",in:"cs2.exe")==(-1) && TuningFile.initial.value("drawables",in:"cs2.exe")==0 && TuningFile.initial.value("queue",in:"cs2.exe")==0,"新配置画面应跟随游戏")
+    let readerNow=Date().timeIntervalSince1970
+    let readerReady=Data("{\"protocol\":1,\"pid\":\(getpid()),\"state\":\"ready\",\"devices\":1,\"reports\":3,\"updated\":\(readerNow)}".utf8)
+    try expect(WheelReaderStatus.description(readerReady,now:readerNow).contains("就绪"),"读取器就绪应显示真实设备状态")
+    try expect(WheelReaderStatus.description(readerReady,now:readerNow+4).contains("未运行"),"过期状态不能显示就绪")
+    try expect(WheelReaderStatus.description(nil).contains("原生滚动"),"无读取器必须明确回退状态")
+    let denied=Data(String(decoding:readerReady,as:UTF8.self).replacingOccurrences(of:"ready",with:"permission-required").utf8)
+    try expect(WheelReaderStatus.description(denied,now:readerNow).contains("缺少输入监控"),"文件存在不能覆盖授权失败")
     try runFrameStatsTests()
     let controls=TuningFile("[global]\nqueue=16\nfps=120\nstats=1\npacing=2\n[cs2.exe]\nfps=90\n")
     try controls.validate()
@@ -491,7 +503,11 @@ func runTests() throws {
     print("PASS: inheritance, case-insensitive profiles, round-trip, invalid values, config preservation and idempotent repair")
 }
 @main struct TunerMain {static func main() {
-if CommandLine.arguments.contains("--list-games") {
+if CommandLine.arguments.contains("--install-wheel-helper") {
+    do {try WheelReader.install(requestAccess:CommandLine.arguments.contains("--request-access"));print(WheelReader.installed.path);exit(0)}catch {fputs("\(error.localizedDescription)\n",stderr);exit(1)}
+} else if CommandLine.arguments.contains("--wheel-status") {
+    print(WheelReader.status());exit(0)
+} else if CommandLine.arguments.contains("--list-games") {
     do {let games=try SteamLibrary.scan();let encoder=JSONEncoder();encoder.outputFormatting=[.prettyPrinted,.sortedKeys,.withoutEscapingSlashes];print(String(data:try encoder.encode(games),encoding:.utf8)!);exit(0)}catch {fputs("\(error)\n",stderr);exit(1)}
 } else if CommandLine.arguments.contains("--library-test") {
     do {try runLibraryTests();exit(0)}catch {fputs("\(error)\n",stderr);exit(1)}

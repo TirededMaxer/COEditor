@@ -100,6 +100,12 @@ jobs:
         with:
           name: COEditor-macOS-arm64-${{ github.sha }}
           path: dist
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: COEditor-Wine-26.3-x86_64-${{ github.sha }}
+          path: dist
+      - name: Include matching Wine component checksum
+        run: (cd dist && sha256sum COEditor-Wine-26.3-x86_64.tar.gz >> SHA256SUMS)
       - name: Publish, download-verify, then remove old releases
         env:
           GH_TOKEN: ${{ github.token }}

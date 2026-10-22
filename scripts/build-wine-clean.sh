@@ -44,6 +44,8 @@ for name in ntdll.so win32u.so winemac.so wineserver; do
   file "$components/$name"
 done
 cp "$repo_root/LICENSE" "$components/"
+cp "$repo_root/third_party/Sevoflurane-LICENSE.txt" "$components/"
+cp "$repo_root/third_party/Sevoflurane-LICENSE.txt" "$wine_source/COPYING.sevoflurane"
 cp "$wine_source/coeditor-source.json" "$components/"
 cp "$repo_root/patches/wine-26.3/"* "$components/"
 # Keep the exact corresponding source with these cloud-only component artifacts.

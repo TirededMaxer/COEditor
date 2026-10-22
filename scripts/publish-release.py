@@ -43,7 +43,7 @@ def publish(repository, tag, directory):
     info = json.loads((directory / "BUILDINFO.json").read_text())
     if info["commit"] != commit or info["builder"] != "GitHub Actions":
         raise RuntimeError("Artifacts must come from this cloud commit")
-    names = [f"COEditor-{version}-macOS-arm64.dmg", "SHA256SUMS", "BUILDINFO.json"]
+    names = [f"COEditor-{version}-macOS-arm64.dmg", "SHA256SUMS", "BUILDINFO.json", "COEditor-Wine-26.3-x86_64.tar.gz"]
     subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=directory, check=True)
     existing = api(repository, "releases?per_page=100")
     current = next((r for r in existing if r["tag_name"] == tag), None)

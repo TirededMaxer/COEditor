@@ -20,12 +20,12 @@
     {
       "path": "dlls/winemac.drv/cocoa_app.h",
       "before": "2ce955c7b185df3f28edbecd0fe327d383019b59f8f74028fa7e17c44f75bf95",
-      "after": "68724109385d747182a5a35d1349a3391acaee3e51baeda1d3a04a2b30afe6c5"
+      "after": "16409744215ca903da5b6d96c6b1a671d2b2299e7e4d85aa321eeb1eea3c62cf"
     },
     {
       "path": "dlls/winemac.drv/cocoa_app.m",
       "before": "b9d0434dc8ecaf0379f8300e94f2e8c70b3b320c45b4cb9f7d6877acd2e94c30",
-      "after": "cbd15bd8ae0ffc249d507fbc1ad44952dbd81253170364a5e19bf947356fb21b"
+      "after": "530df8c1fefbab93866a6cfdff33b76935aad2298301c4bf98e52c7048bc7cca"
     },
     {
       "path": "dlls/winemac.drv/cocoa_gcmouse.m",
@@ -75,7 +75,7 @@
     {
       "path": "dlls/winemac.drv/wheel_raw.h",
       "before": null,
-      "after": "cf54817cd56fcb02e73d21be3ef93ef20a444924d45f0bbfe8e1315ce2bd9c0a"
+      "after": "cb99ae8a049356016e63e4e1c840210fb17f2402a8fe456d915fa51ee3628d15"
     },
     {
       "path": "include/wine/gdi_driver.h",
@@ -106,7 +106,32 @@
       "path": "dlls/winemac.drv/cx_frame_control.m.h",
       "before": null,
       "after": "718571647eb968b2bff6a4fe8db7dcc1b873aeefe078e0d5583dfd34cdd49a6f"
+    },
+    {
+      "path": "dlls/winemac.drv/cocoa_window.m",
+      "before": "b7799976aa6446051cc0e10b55fff6474943af873b61c25df7856b28b7e1eb0f",
+      "after": "afe2f6e2331e036e1c1d8f8c36629069eb1eabc95c2d48d55fa57beff072e077"
+    },
+    {
+      "path": "dlls/winemac.drv/cocoa_status_item.m",
+      "before": "ae3d0b54ba46785539d1ec7c61870fc01056475f9a0c39d44f5f69c01dab5bc0",
+      "after": "2a403156fdc73cbd740ce3d6890f37e787079e1f68a1972efe4c21c55a0f6f9c"
+    },
+    {
+      "path": "dlls/winemac.drv/sevo_ui_policy.h",
+      "before": null,
+      "after": "510be5efc926975afc3dc6e64d0716f96b9ffc8ba5d99762d3ab4635eba6c403"
+    },
+    {
+      "path": "dlls/winemac.drv/wheel_bridge.h",
+      "before": null,
+      "after": "c1efe54a7326eac148e3697e1106bf9c94e1c2cd75131c33781ac6950b865a34"
     }
   ],
-  "source_sha256": "ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872"
+  "source_sha256": "ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872",
+  "sevo_ui_source": {
+    "repository": "https://github.com/TirededMaxer/sevoflurane",
+    "commit": "d14b83beab393448d45bab90e6534072e4d95df9",
+    "path": "Tools/crossover-ui/sevoflurane-crossover-ui.patch"
+  }
 }

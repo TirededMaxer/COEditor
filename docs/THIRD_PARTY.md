@@ -8,3 +8,5 @@
 - CrossOver、Steam、Sevoflurane 等名称属于各自项目或权利人。本项目不授予商业 CrossOver 的使用许可。
 
 - 实际呈现统计使用 Apple `MTLDrawable.presentedTime` / `addPresentedHandler`，提交节奏使用 CoreVideo 刷新周期和呈现反馈；不携带 Apple 框架。
+
+- Sevoflurane UI 兼容性补丁固定取自本机已安装 build 65 对应源码 `Tools/crossover-ui/sevoflurane-crossover-ui.patch`，合并到 Wine 补丁中保留 Steam 窗口/托盘隐藏策略；Sevoflurane 原项目使用 MIT License，保留声明见 `third_party/Sevoflurane-LICENSE.txt`；合并后的 Wine 库仍使用 LGPL-2.1-or-later，来源提交在 `patches/wine-26.3/files.json` 记录。

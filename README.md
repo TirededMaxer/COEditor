@@ -6,7 +6,7 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 
 ## 下载与安装
 
-在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.4.3-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
+在 [Releases](https://github.com/TirededMaxer/COEditor/releases) 下载 `COEditor-1.5.0-macOS-arm64.dmg`，打开后把 **COEditor.app** 拖入“应用程序”。
 
 **当前 DMG 是管理工具，需要已经准备好的本地补丁引擎与 Steam 容器；它不会自动下载安装 CrossOver 或替你完成 Wine 构建。** 从 1.3 升级时，限帧、提交节奏和呈现统计还需要更新匹配的 Wine 驱动与本地维护清单；仅替换应用不会给旧驱动增加这些功能。 首次从源码建立补丁环境，请阅读 [构建与集成](docs/BUILDING.md)。本仓库不分发 CrossOver 商业运行时、Steam 客户端、游戏或账号数据。
 
@@ -48,11 +48,17 @@ macOS 上的 CrossOver 游戏调整器：用原生界面管理鼠标输入、实
 
 Metal 设置适用于补丁中的 D3DMetal 路径；不会自动改变 DXVK / DXMT 的呈现行为。队列代理仅支持已注册的 x86-64 D3D11 程序，保留原始 D3DMetal DLL 并转发其三个设备创建导出。Steam 客户端相关进程跳过游戏画面覆盖。
 
-## 滚轮在更新后失效
+## 独立滚轮读取器（1.5）
 
-若实体鼠标一格切换多次，先确认“滚轮刻度优化”已开启并保存。若日志出现 `Input Monitoring permission required; native wheel unchanged`，表示原始 HID 读取被系统拒绝，程序已回退到原生滚动；这并非参数未保存。
+1.5 的 Wine 驱动从独立 **COEditor Wheel.app** 接收滚轮，权限不再由 Sevoflurane 或它的后台程序承担。从同一 Release 下载 `COEditor-Wine-26.3-x86_64.tar.gz` 并按 [集成说明](docs/BUILDING.md) 安装匹配的 1.5 Wine 组件，再在 COEditor 点击“设置滚轮组件…”，确认组件路径与权限用途；在系统“隐私与安全性 → 输入监控”允许 **COEditor Wheel**。如 macOS 要求重启组件，按系统提示操作。
 
-Sevoflurane / 后台程序更新后，ad-hoc 签名可能改变，原有“输入监控”开关即使显示开启，旧授权也可能不再有效。在系统设置的“隐私与安全性 → 输入监控”中刷新当前 Sevoflurane 和 SevofluraneDaemon 的授权；仍无效时移除旧条目，再添加当前应用及其 `Contents/Library/LaunchAgents/SevofluraneDaemon`，按系统提示重启。这属于启动入口更新后的系统授权恢复；普通参数修改仍只需重启游戏。COEditor 不会修改 TCC 数据库，也不会替其他应用绕过系统授权。
+组件安装在 `~/Library/Application Support/CrossOver/CustomRuntimes/.tuner-support/Wheel/COEditor Wheel.app`，通过当前用户 LaunchAgent 独立运行。Sevoflurane 更新不会替换它。COEditor 更新也保留已安装且校验通过的协议 1 组件及其签名；组件本身将来需要替换时，ad-hoc 签名仍可能要求重新授权，并非永久豁免系统权限。
+
+读取器只处理实体设备的相对滚轮元素，不处理键盘和鼠标移动；物理报告写入仅当前用户可读的固定大小内存环，标记前台进程。Wine 只消费发给自身的事件。切换前后台不重新打开 HID 设备，设备热插拔由同一个管理器处理；授权失败会每秒复查，设备打开失败也会重试。读取器心跳超过 250 ms 即停止使用；实际投递成功后才抑制原生/Mos 副本，首次副本短暂等待 16 ms 以覆盖两条路径的到达顺序。触控板带手势阶段的事件保留原生路径。
+
+“输入”区域每两秒刷新读取器的权限、设备及报告计数；它表示物理读取端状态，不等于游戏已接收。游戏日志中的 `[CXWheelBridge] physical delivery confirmed` 才表示该进程已投递物理刻度。权限缺失、设备不存在、读取器退出时会显示对应状态与原生回退，不再用文件校验结果代替输入运行状态。游戏的优化开关仍在启动时读取，普通参数修改保存后只需重启游戏。
+
+旧版日志中的 `[CXWheelHID] Input Monitoring permission required` 属于 1.4 驱动；只替换编辑器无法升级 Wine。COEditor 不修改 TCC 数据库，也不放宽任何应用的代码签名要求。
 
 ## 云端构建与发布
 
@@ -61,7 +67,7 @@ Sevoflurane / 后台程序更新后，ad-hoc 签名可能改变，原有“输�
 - 推送 main、提交 PR 或手动运行工作流，会执行干净构建、测试、DMG 签名和挂载校验，并上传 Actions artifacts。
 - 推送与应用版本一致的 v* 标签，两项构建成功后自动发布新版。附件会从 GitHub 下载比对，确认新 Release 成功后再删除旧 Release。
 - 每次从官方地址下载匹配 Wine 源码；不使用本机 CrossOver 开发库、编译缓存或预先构建的 Wine 目录。
-- DMG 附带 SHA256SUMS 与 BUILDINFO.json，可追溯源码提交、构建运行及工具链。组件 artifact 同时保留对应 Wine 源码。
+- DMG 附带 SHA256SUMS 与 BUILDINFO.json，可追溯源码提交、构建运行及工具链。Wine 组件附件同时保留对应 Wine 源码。
 - Actions artifacts 保留 7 天，Release 只保留最新版。工作流、手动触发和运行时集成见 [构建说明](docs/BUILDING.md)。
 
 应用使用 ad-hoc 签名；公开 DMG 未经 Developer ID 签名或 Apple 公证，macOS 可能要求在“隐私与安全性”中手动允许打开。
@@ -70,6 +76,7 @@ Sevoflurane / 后台程序更新后，ad-hoc 签名可能改变，原有“输�
 
 ```text
 Sources/COEditor/       原生应用与 Steam 库解析器
+Sources/WheelBridge/    独立物理滚轮读取器与跨架构共享协议
 Sources/D3D11Proxy/     游戏侧 D3D11 转发代理
 Sources/LegacySteam/    旧 Windows Steam 启动入口与 CEF 方案的辅助源码
 patches/wine-26.3/      完整 Wine 改动、逐文件基线及结果哈希

@@ -17,6 +17,8 @@ COEditor
 本工具管理已经配置好的 CrossOver 26.3 补丁环境与 Steam 容器。
 DMG 不包含 CrossOver 商业运行时、Steam 或游戏，也不会自动安装补丁引擎。
 已有补丁环境的用户可直接替换旧调整器，配置继续保留。
+1.5 的滚轮优化需要匹配的 Wine 驱动和独立 COEditor Wheel 读取器。
+请按 README 更新驱动，再点击“设置滚轮组件…”授权；仅替换应用不能升级旧驱动。
 
 Apple Silicon；构建目标 macOS 13+，实际验证 macOS 27.0.1。
 ad-hoc 签名，未进行 Developer ID 签名或 Apple 公证。

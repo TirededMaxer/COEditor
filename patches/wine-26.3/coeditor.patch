@@ -169,7 +169,7 @@
  
  
  #if !defined(MAC_OS_VERSION_14_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_14_0
-@@ -119,12 +163,96 @@
+@@ -119,12 +163,100 @@
  @property (retain, nonatomic) WineWindow* mouseCaptureWindow;
  
      - (void) setupObservations;
@@ -190,6 +190,7 @@
 +static uint64_t cx_wheel_cursor, cx_wheel_delivered;
 +static uint32_t cx_wheel_reader_pid;
 +static int cx_wheel_last_state = -1;
++static uint64_t cx_wheel_last_open;
 +
 +static bool cx_wheel_open_bridge(void)
 +{
@@ -199,6 +200,9 @@
 +    int fd;
 +    if (cx_wheel_shared) return true;
 +    if (!home) return false;
++    uint64_t now = cx_wheel_now();
++    if (now - cx_wheel_last_open < CX_WHEEL_LEASE_NS) return false;
++    cx_wheel_last_open = now;
 +    snprintf(path, sizeof(path), "%s/Library/Application Support/CrossOver/CustomRuntimes/.tuner-support/Wheel/wheel-v1.bin", home);
 +    fd = open(path, O_RDONLY | O_NOFOLLOW);
 +    if (fd < 0) return false;
@@ -266,7 +270,7 @@
  
  
  @implementation WineApplicationController
-@@ -172,6 +300,14 @@
+@@ -172,6 +304,14 @@
          if (self != nil)
          {
              CFRunLoopSourceContext context = { 0 };
@@ -281,7 +285,7 @@
              context.perform = PerformRequest;
              requestSource = CFRunLoopSourceCreate(NULL, 0, &context);
              if (!requestSource)
-@@ -294,6 +430,15 @@
+@@ -294,6 +434,15 @@
  
      - (void) transformProcessToForeground:(BOOL)activateIfTransformed
      {
@@ -297,7 +301,7 @@
          if ([NSApp activationPolicy] != NSApplicationActivationPolicyRegular)
          {
              NSMenu* mainMenu;
-@@ -1737,7 +1882,51 @@
+@@ -1737,7 +1886,51 @@
          forceNextMouseMoveAbsolute = TRUE;
      }
  
@@ -349,7 +353,7 @@
      {
          WineWindow* window;
  
-@@ -1778,16 +1967,16 @@
+@@ -1778,16 +1971,16 @@
                  event->mouse_scroll.y = floor(pt.y);
                  event->mouse_scroll.time_ms = [self ticksForEventTime:[theEvent timestamp]];
  
@@ -370,7 +374,7 @@
                  }
                  else
                  {
-@@ -1801,8 +1990,8 @@
+@@ -1801,8 +1994,8 @@
                          CFRelease(source);
                      }
  
@@ -381,7 +385,7 @@
                  }
  
                  /* Mac: negative is right or down, positive is left or up.
-@@ -1818,8 +2007,24 @@
+@@ -1818,8 +2011,24 @@
  
                  if (use_precise_scrolling)
                  {
@@ -408,7 +412,7 @@
  
                      if (!continuous)
                      {
-@@ -2177,6 +2382,7 @@
+@@ -2177,6 +2386,7 @@
          NSString *configDir, *prefix;
          NSDictionary *userInfo;
  
@@ -416,7 +420,7 @@
          if ([NSApp isActive]) return;  /* Nothing to do. */
  
          if (!ignore ||
-@@ -2432,6 +2638,7 @@
+@@ -2432,6 +2642,7 @@
       */
      - (void)applicationDidBecomeActive:(NSNotification *)notification
      {
@@ -424,7 +428,7 @@
          NSNumber* displayID;
          NSDictionary* modesToRealize = [latentDisplayModes autorelease];
  
-@@ -2588,6 +2795,7 @@
+@@ -2588,6 +2799,7 @@
  
      - (void)applicationWillResignActive:(NSNotification *)notification
      {
@@ -1039,7 +1043,7 @@
 +#endif
 --- /dev/null
 +++ b/dlls/winemac.drv/wheel_raw.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,17 @@
 +/* Local physical wheel translation; LGPL-2.1-or-later, like winemac.drv. */
 +#ifndef MACDRV_WHEEL_RAW_H
 +#define MACDRV_WHEEL_RAW_H
@@ -1055,10 +1059,6 @@
 +    else if (page == 0x0c && usage == 0x238) *x = value * 120;
 +    else return false;
 +    return true;
-+}
-+static inline bool macdrv_drop_native_wheel(unsigned int devices, unsigned int phase, unsigned int momentum)
-+{
-+    return devices && !phase && !momentum;
 +}
 +#endif
 --- a/include/wine/gdi_driver.h

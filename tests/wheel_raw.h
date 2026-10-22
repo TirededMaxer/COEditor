@@ -14,8 +14,4 @@ static inline bool macdrv_hid_wheel_delta(unsigned int page, unsigned int usage,
     else return false;
     return true;
 }
-static inline bool macdrv_drop_native_wheel(unsigned int devices, unsigned int phase, unsigned int momentum)
-{
-    return devices && !phase && !momentum;
-}
 #endif

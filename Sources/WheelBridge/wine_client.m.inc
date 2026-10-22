@@ -5,6 +5,7 @@ static CFRunLoopTimerRef cx_wheel_timer;
 static uint64_t cx_wheel_cursor, cx_wheel_delivered;
 static uint32_t cx_wheel_reader_pid;
 static int cx_wheel_last_state = -1;
+static uint64_t cx_wheel_last_open;
 
 static bool cx_wheel_open_bridge(void)
 {
@@ -14,6 +15,9 @@ static bool cx_wheel_open_bridge(void)
     int fd;
     if (cx_wheel_shared) return true;
     if (!home) return false;
+    uint64_t now = cx_wheel_now();
+    if (now - cx_wheel_last_open < CX_WHEEL_LEASE_NS) return false;
+    cx_wheel_last_open = now;
     snprintf(path, sizeof(path), "%s/Library/Application Support/CrossOver/CustomRuntimes/.tuner-support/Wheel/wheel-v1.bin", home);
     fd = open(path, O_RDONLY | O_NOFOLLOW);
     if (fd < 0) return false;

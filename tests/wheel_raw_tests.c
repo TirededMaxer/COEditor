@@ -15,9 +15,5 @@ int main(void)
  CHECK(!macdrv_hid_wheel_delta(1,0x38,false,1,&x,&y),"absolute controls are excluded");
  CHECK(macdrv_hid_wheel_delta(1,0x38,true,0,&x,&y)&&x==0&&y==0,"idle report cannot generate a wheel step");
  CHECK(!macdrv_hid_wheel_delta(1,0x38,true,INT64_MAX,&x,&y),"invalid oversized reports cannot overflow");
- CHECK(macdrv_drop_native_wheel(1,0,0),"active hardware reader drops phase-less native and Mos duplicates");
- CHECK(!macdrv_drop_native_wheel(0,0,0),"permission/device absence preserves normal input");
- CHECK(!macdrv_drop_native_wheel(1,2,0),"trackpad gesture phases keep native smooth input");
- CHECK(!macdrv_drop_native_wheel(1,0,2),"trackpad momentum keeps native input");
  printf("RESULT checks=%d failures=%d\n",checks,failures);return failures?1:0;
 }

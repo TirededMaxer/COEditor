@@ -2,7 +2,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 build_mode="${1:-release}"
-case "$build_mode" in release) optimization=-O;; debug) optimization=-Onone;; *) echo 'Usage: build-app.sh [release|debug]' >&2; exit 2;; esac
+case "$build_mode" in release) optimization=-O; c_optimization=-O2;; debug) optimization=-Onone; c_optimization=-O0;; *) echo 'Usage: build-app.sh [release|debug]' >&2; exit 2;; esac
 output_dir="$repo_root/build/$build_mode"
 rm -rf "$output_dir"
 app="$output_dir/COEditor.app"
@@ -13,7 +13,7 @@ cp "$repo_root/Resources/Info.plist" "$app/Contents/Info.plist"
 cp "$repo_root/Resources/Tuner.icns" "$app/Contents/Resources/Tuner.icns"
 helper="$app/Contents/Resources/COEditor Wheel.app"
 mkdir -p "$helper/Contents/MacOS"
-xcrun clang "$optimization" -Wall -Wextra -Wno-unused-parameter -fobjc-arc -target arm64-apple-macosx13.0 "$repo_root/Sources/WheelBridge/main.m" -o "$helper/Contents/MacOS/COEditorWheel" -framework AppKit -framework IOKit
+xcrun clang "$c_optimization" -Wall -Wextra -Wno-unused-parameter -fobjc-arc -target arm64-apple-macosx13.0 "$repo_root/Sources/WheelBridge/main.m" -o "$helper/Contents/MacOS/COEditorWheel" -framework AppKit -framework IOKit
 cp "$repo_root/Resources/WheelInfo.plist" "$helper/Contents/Info.plist"
 codesign --force --sign - --identifier local.coeditor.wheel.protocol1 "$helper"
 codesign --verify --strict "$helper"

@@ -25,7 +25,7 @@
     {
       "path": "dlls/winemac.drv/cocoa_app.m",
       "before": "b9d0434dc8ecaf0379f8300e94f2e8c70b3b320c45b4cb9f7d6877acd2e94c30",
-      "after": "530df8c1fefbab93866a6cfdff33b76935aad2298301c4bf98e52c7048bc7cca"
+      "after": "55c17de5ebddafbdf7158c5904da8d34b0d27b9e7966b9cf91d7ec4aa39563cb"
     },
     {
       "path": "dlls/winemac.drv/cocoa_gcmouse.m",
@@ -75,7 +75,7 @@
     {
       "path": "dlls/winemac.drv/wheel_raw.h",
       "before": null,
-      "after": "cb99ae8a049356016e63e4e1c840210fb17f2402a8fe456d915fa51ee3628d15"
+      "after": "129f64fc32d2b39576ff27a7ee2d82e494bcb4ca01b2d724b6d95cd827aaa9d9"
     },
     {
       "path": "include/wine/gdi_driver.h",

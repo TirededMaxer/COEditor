@@ -17,7 +17,7 @@ struct WheelReaderStatus: Decodable {
     var reports:UInt64
     var clients:Int?
     var updated:Double
-    var openError:UInt32?
+    var openError:Int64?
     static func presentation(_ data:Data?,installed:Bool,installationIssue:String?=nil,configured:Bool=false,runningPID:Int32?=nil,now:Double=Date().timeIntervalSince1970)->WheelReaderPresentation {
         func warning(_ text:String)->WheelReaderPresentation { .init(state:.warning,text:text) }
         guard installed else {return .notInstalled}
@@ -34,7 +34,7 @@ struct WheelReaderStatus: Decodable {
         case "no-device","ready":return warning("滚轮读取器已授权，未检测到实体滚轮；当前使用原生滚动")
         case "setup":return warning("正在设置滚轮读取器，等待系统授权")
         case "idle":return .init(state:.healthy,text:"滚轮组件已安装，读取器待命；游戏启动时自动唤起")
-        case "open-error":return warning("滚轮设备打开失败\(s.openError.map {"（错误码 0x"+String($0,radix:16)+"）"} ?? "")；当前使用原生滚动")
+        case "open-error":return warning("滚轮设备打开失败\(s.openError.map {"（错误码 0x"+String(UInt32(truncatingIfNeeded:$0),radix:16)+"）"} ?? "")；当前使用原生滚动")
         default:return warning("滚轮读取器状态异常；请重新检查组件")
         }
     }

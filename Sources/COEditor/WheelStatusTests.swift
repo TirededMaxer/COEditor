@@ -17,6 +17,10 @@ func runWheelStatusTests() throws {
         let status=active(data(state))
         try expect(status.state == .warning && status.text.contains(text) && status.symbol=="exclamationmark.triangle.fill","异常状态应显示对应原因："+state)
     }
+    for error in ["-536870174","3758097122"] {
+        let bytes=Data(String(decoding:data("open-error"),as:UTF8.self).replacingOccurrences(of:"\"openError\":5",with:"\"openError\":"+error).utf8)
+        try expect(active(bytes).text.contains("设备打开失败") && active(bytes).text.contains("0xe00002e2"),"有符号或无符号 IOReturn 都应显示设备打开错误")
+    }
     for bytes in [nil,Data("broken".utf8),data("ready",version:1),data("ready",readerPID:999),data("ready",updated:now-4),data("ready",updated:now+10)] as [Data?] {
         try expect(!active(bytes).isHealthy,"运行中缺失、过期或错误进程的状态不能显示绿色对勾")
     }

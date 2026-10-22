@@ -50,7 +50,7 @@ Metal 设置适用于补丁中的 D3DMetal 路径；不会自动改变 DXVK / DX
 
 帧率上限输入框不会在打开或切回应用时自动获得输入焦点；点击后可编辑，按回车或 Esc 结束编辑。
 
-## 独立滚轮读取器（1.5.3）
+## 独立滚轮读取器（1.5.4）
 
 1.5 的 Wine 驱动从独立 **COEditor Wheel.app** 接收滚轮，权限不再由 Sevoflurane 或它的后台程序承担。从同一 Release 下载 `COEditor-Wine-26.3-x86_64.tar.gz` 并按 [集成说明](docs/BUILDING.md) 安装匹配的 1.5 Wine 组件，再在 COEditor 点击“设置滚轮组件…”，确认组件路径与权限用途；在系统“隐私与安全性 → 输入监控”允许 **COEditor Wheel**。如 macOS 要求重启组件，按系统提示操作。
 

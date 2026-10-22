@@ -100,6 +100,7 @@ int main(int argc,const char **argv) { @autoreleasepool {
     NSString *path=[directory stringByAppendingPathComponent:@"wheel-v1.bin"];
     int fd=open(path.fileSystemRepresentation,O_RDWR|O_CREAT|O_NOFOLLOW,0600);
     if(fd<0 || flock(fd,LOCK_EX|LOCK_NB) || ftruncate(fd,sizeof(*bridge))) return 2;
+    fchmod(fd,0600);
     bridge=mmap(NULL,sizeof(*bridge),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     if(bridge==MAP_FAILED)return 3;
     memset(bridge,0,sizeof(*bridge));bridge->version=1;bridge->pid=getpid();

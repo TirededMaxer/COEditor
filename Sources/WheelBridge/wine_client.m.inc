@@ -5,7 +5,7 @@ static CFRunLoopTimerRef cx_wheel_timer;
 static uint64_t cx_wheel_cursor, cx_wheel_delivered;
 static uint32_t cx_wheel_reader_pid;
 static int cx_wheel_last_state = -1;
-static uint64_t cx_wheel_last_open;
+static uint64_t cx_wheel_last_open, cx_wheel_focus_generation;
 
 static bool cx_wheel_open_bridge(void)
 {
@@ -67,16 +67,17 @@ static void cx_wheel_tick(CFRunLoopTimerRef timer, void *context) { cx_wheel_dra
 static void cx_stop_raw_wheel(void)
 {
     if (cx_wheel_timer) { CFRunLoopTimerInvalidate(cx_wheel_timer); CFRelease(cx_wheel_timer); cx_wheel_timer = NULL; }
-    cx_wheel_delivered = 0;
+    ++cx_wheel_focus_generation;
     if (cx_wheel_shared) cx_wheel_cursor = __atomic_load_n(&cx_wheel_shared->sequence, __ATOMIC_ACQUIRE);
 }
 static void cx_start_raw_wheel(void)
 {
     struct cx_tuner_settings tuning = cx_tuner_read();
     const char *mode = tuning.loaded ? (tuning.wheel ? "hid" : "off") : getenv("CX_WHEEL_INPUT");
-    if (!mode || strcmp(mode, "hid")) { cx_stop_raw_wheel(); return; }
+    if (!mode || strcmp(mode, "hid")) { cx_wheel_delivered = 0; cx_stop_raw_wheel(); return; }
     if (cx_wheel_timer) return;
-    cx_wheel_delivered = 0;
+    ++cx_wheel_focus_generation;
+    if (cx_wheel_now() - cx_wheel_delivered >= CX_WHEEL_TAIL_NS) cx_wheel_delivered = 0;
     cx_wheel_open_bridge();
     if (cx_wheel_shared) cx_wheel_cursor = __atomic_load_n(&cx_wheel_shared->sequence, __ATOMIC_ACQUIRE);
     cx_wheel_timer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent(), 0.002, 0, 0, cx_wheel_tick, NULL);

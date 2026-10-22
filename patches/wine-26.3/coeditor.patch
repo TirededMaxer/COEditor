@@ -169,7 +169,7 @@
  
  
  #if !defined(MAC_OS_VERSION_14_0) || MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_14_0
-@@ -119,12 +163,100 @@
+@@ -119,12 +163,101 @@
  @property (retain, nonatomic) WineWindow* mouseCaptureWindow;
  
      - (void) setupObservations;
@@ -190,7 +190,7 @@
 +static uint64_t cx_wheel_cursor, cx_wheel_delivered;
 +static uint32_t cx_wheel_reader_pid;
 +static int cx_wheel_last_state = -1;
-+static uint64_t cx_wheel_last_open;
++static uint64_t cx_wheel_last_open, cx_wheel_focus_generation;
 +
 +static bool cx_wheel_open_bridge(void)
 +{
@@ -252,16 +252,17 @@
 +static void cx_stop_raw_wheel(void)
 +{
 +    if (cx_wheel_timer) { CFRunLoopTimerInvalidate(cx_wheel_timer); CFRelease(cx_wheel_timer); cx_wheel_timer = NULL; }
-+    cx_wheel_delivered = 0;
++    ++cx_wheel_focus_generation;
 +    if (cx_wheel_shared) cx_wheel_cursor = __atomic_load_n(&cx_wheel_shared->sequence, __ATOMIC_ACQUIRE);
 +}
 +static void cx_start_raw_wheel(void)
 +{
 +    struct cx_tuner_settings tuning = cx_tuner_read();
 +    const char *mode = tuning.loaded ? (tuning.wheel ? "hid" : "off") : getenv("CX_WHEEL_INPUT");
-+    if (!mode || strcmp(mode, "hid")) { cx_stop_raw_wheel(); return; }
++    if (!mode || strcmp(mode, "hid")) { cx_wheel_delivered = 0; cx_stop_raw_wheel(); return; }
 +    if (cx_wheel_timer) return;
-+    cx_wheel_delivered = 0;
++    ++cx_wheel_focus_generation;
++    if (cx_wheel_now() - cx_wheel_delivered >= CX_WHEEL_TAIL_NS) cx_wheel_delivered = 0;
 +    cx_wheel_open_bridge();
 +    if (cx_wheel_shared) cx_wheel_cursor = __atomic_load_n(&cx_wheel_shared->sequence, __ATOMIC_ACQUIRE);
 +    cx_wheel_timer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent(), 0.002, 0, 0, cx_wheel_tick, NULL);
@@ -270,7 +271,7 @@
  
  
  @implementation WineApplicationController
-@@ -172,6 +304,14 @@
+@@ -172,6 +305,14 @@
          if (self != nil)
          {
              CFRunLoopSourceContext context = { 0 };
@@ -285,7 +286,7 @@
              context.perform = PerformRequest;
              requestSource = CFRunLoopSourceCreate(NULL, 0, &context);
              if (!requestSource)
-@@ -294,6 +434,15 @@
+@@ -294,6 +435,15 @@
  
      - (void) transformProcessToForeground:(BOOL)activateIfTransformed
      {
@@ -301,7 +302,7 @@
          if ([NSApp activationPolicy] != NSApplicationActivationPolicyRegular)
          {
              NSMenu* mainMenu;
-@@ -1737,7 +1886,51 @@
+@@ -1737,7 +1887,51 @@
          forceNextMouseMoveAbsolute = TRUE;
      }
  
@@ -335,12 +336,12 @@
 +         * A detected device alone never licenses dropping a native event. */
 +        if (cx_wheel_timer && ![theEvent phase] && ![theEvent momentumPhase] && cx_wheel_drain())
 +        {
-+            uint64_t event_ns = cx_wheel_now();
++            uint64_t event_ns = cx_wheel_now(), generation = cx_wheel_focus_generation;
 +            if (cx_wheel_claimed(cx_wheel_delivered, event_ns, cx_wheel_now())) return;
 +            NSEvent *native = [theEvent retain];
 +            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
 +                bool live = cx_wheel_timer && cx_wheel_drain();
-+                if ([NSApp isActive] && (!live || !cx_wheel_claimed(cx_wheel_delivered, event_ns, cx_wheel_now())))
++                if ([NSApp isActive] && generation == cx_wheel_focus_generation && (!live || !cx_wheel_claimed(cx_wheel_delivered, event_ns, cx_wheel_now())))
 +                    [self handleNativeScrollWheel:native];
 +                [native release];
 +            });
@@ -353,7 +354,7 @@
      {
          WineWindow* window;
  
-@@ -1778,16 +1971,16 @@
+@@ -1778,16 +1972,16 @@
                  event->mouse_scroll.y = floor(pt.y);
                  event->mouse_scroll.time_ms = [self ticksForEventTime:[theEvent timestamp]];
  
@@ -374,7 +375,7 @@
                  }
                  else
                  {
-@@ -1801,8 +1994,8 @@
+@@ -1801,8 +1995,8 @@
                          CFRelease(source);
                      }
  
@@ -385,7 +386,7 @@
                  }
  
                  /* Mac: negative is right or down, positive is left or up.
-@@ -1818,8 +2011,24 @@
+@@ -1818,8 +2012,24 @@
  
                  if (use_precise_scrolling)
                  {
@@ -412,7 +413,7 @@
  
                      if (!continuous)
                      {
-@@ -2177,6 +2386,7 @@
+@@ -2177,6 +2387,7 @@
          NSString *configDir, *prefix;
          NSDictionary *userInfo;
  
@@ -420,7 +421,7 @@
          if ([NSApp isActive]) return;  /* Nothing to do. */
  
          if (!ignore ||
-@@ -2432,6 +2642,7 @@
+@@ -2432,6 +2643,7 @@
       */
      - (void)applicationDidBecomeActive:(NSNotification *)notification
      {
@@ -428,7 +429,7 @@
          NSNumber* displayID;
          NSDictionary* modesToRealize = [latentDisplayModes autorelease];
  
-@@ -2588,6 +2799,7 @@
+@@ -2588,6 +2800,7 @@
  
      - (void)applicationWillResignActive:(NSNotification *)notification
      {

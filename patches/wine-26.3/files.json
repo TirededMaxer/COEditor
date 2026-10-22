@@ -25,7 +25,7 @@
     {
       "path": "dlls/winemac.drv/cocoa_app.m",
       "before": "b9d0434dc8ecaf0379f8300e94f2e8c70b3b320c45b4cb9f7d6877acd2e94c30",
-      "after": "55c17de5ebddafbdf7158c5904da8d34b0d27b9e7966b9cf91d7ec4aa39563cb"
+      "after": "f39c705ca25a0c647dc368111a44a2a4895352b9cb70eba56704be46eb52afdd"
     },
     {
       "path": "dlls/winemac.drv/cocoa_gcmouse.m",

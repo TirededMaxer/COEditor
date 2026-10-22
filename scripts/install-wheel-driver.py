@@ -62,7 +62,7 @@ def main():
     if any(runtime in row and ('wineloader' in row or 'wineserver' in row) for row in commands.splitlines()):
         raise SystemExit('The bottle is still running; stop Steam and its Wine server first')
     previous = component['sha256']
-    backup = support/'Backups/wheel-1.5.0/winemac.so'
+    backup = support/'Backups/wheel-1.5.1/winemac.so'
     if not backup.exists():
         backup.parent.mkdir(parents=True, exist_ok=True)
         atomic(backup, target.read_bytes())

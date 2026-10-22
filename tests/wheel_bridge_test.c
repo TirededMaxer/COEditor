@@ -2,8 +2,16 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include "../Sources/WheelBridge/wheel_bridge.h"
 #define CHECK(c) do {if(!(c)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#c);return 1;}}while(0)
+static struct cx_wheel_bridge concurrent;
+static int done;
+static void *producer(void *unused) {
+    (void)unused;
+    for(int i=1;i<=100000;i++)cx_wheel_publish(&concurrent,10,i,-i,UINT64_C(5000000000));
+    __atomic_store_n(&done,1,__ATOMIC_RELEASE);return NULL;
+}
 int main(void) {
     struct cx_wheel_bridge b={0}; struct cx_wheel_event e; uint64_t c=0,now=UINT64_C(5000000000);
     CHECK(sizeof(e)==32 && sizeof(b)==8232);
@@ -30,5 +38,12 @@ int main(void) {
     memset(&b,0,sizeof(b));cx_wheel_publish(&b,10,0,120,now);
     CHECK(!cx_wheel_next(&b,&c,10,now,&e)); /* new epoch starts from new cursor */
     c=0;CHECK(cx_wheel_next(&b,&c,10,now,&e));
+    pthread_t thread;uint64_t cursor=0;unsigned read=0;
+    CHECK(!pthread_create(&thread,NULL,producer,NULL));
+    do {
+        while(cx_wheel_next(&concurrent,&cursor,10,now,&e)) {CHECK(e.x+e.y==0 && e.x>0 && e.pid==10);read++;}
+    } while(!__atomic_load_n(&done,__ATOMIC_ACQUIRE));
+    pthread_join(thread,NULL);CHECK(read>0);
+    puts("PASS: concurrent producer/consumer never observes a torn physical report");
     puts("PASS: wire layout, permissions, heartbeat expiry, unplug, PID routing, single delivery, focus, stale events, native claims, overflow and restart");return 0;
 }

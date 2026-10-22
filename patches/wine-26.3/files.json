@@ -125,7 +125,7 @@
     {
       "path": "dlls/winemac.drv/wheel_bridge.h",
       "before": null,
-      "after": "c1efe54a7326eac148e3697e1106bf9c94e1c2cd75131c33781ac6950b865a34"
+      "after": "602eb546b4376da7bbe0c0d23cd2f7eb69bc7fdb556d4472a5549b8cc9c995be"
     }
   ],
   "source_sha256": "ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872",

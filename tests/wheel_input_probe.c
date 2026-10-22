@@ -31,7 +31,7 @@ void mainCRTStartup(void) {
     WNDCLASSW wc={0};MSG m;
     logFile=CreateFileW(L"C:\\.cx-wheel-validation.txt",GENERIC_WRITE,FILE_SHARE_READ,0,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,0);
     wc.lpfnWndProc=proc;wc.hInstance=GetModuleHandleW(0);wc.lpszClassName=L"COEditorWheelProbe";
-    wc.hCursor=LoadCursorW(0,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);
+    wc.hCursor=LoadCursorW(0,MAKEINTRESOURCEW(32512));wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);
     if(!RegisterClassW(&wc))ExitProcess(2);
     window=CreateWindowExW(0,wc.lpszClassName,L"COEditor 滚轮验证",WS_OVERLAPPEDWINDOW,100,100,1000,240,0,0,wc.hInstance,0);
     if(!window)ExitProcess(3);

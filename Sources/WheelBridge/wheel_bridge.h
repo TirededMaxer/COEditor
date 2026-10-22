@@ -32,7 +32,12 @@ static inline void cx_wheel_publish(struct cx_wheel_bridge *b, int pid, int x, i
     uint64_t seq = __atomic_load_n(&b->sequence, __ATOMIC_RELAXED) + 1;
     struct cx_wheel_event *e = &b->events[seq % CX_WHEEL_CAPACITY];
     __atomic_store_n(&e->sequence, 0, __ATOMIC_RELEASE);
-    e->time_ns = now; e->pid = pid; e->x = x; e->y = y; e->reserved = 0;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    __atomic_store_n(&e->time_ns, now, __ATOMIC_RELAXED);
+    __atomic_store_n(&e->pid, pid, __ATOMIC_RELAXED);
+    __atomic_store_n(&e->x, x, __ATOMIC_RELAXED);
+    __atomic_store_n(&e->y, y, __ATOMIC_RELAXED);
+    __atomic_store_n(&e->reserved, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&e->sequence, seq, __ATOMIC_RELEASE);
     __atomic_store_n(&b->sequence, seq, __ATOMIC_RELEASE);
 }
@@ -46,7 +51,13 @@ static inline bool cx_wheel_next(const struct cx_wheel_bridge *b, uint64_t *curs
         uint64_t seq = ++*cursor;
         const struct cx_wheel_event *e = &b->events[seq % CX_WHEEL_CAPACITY];
         if (__atomic_load_n(&e->sequence, __ATOMIC_ACQUIRE) != seq) continue;
-        *out = *e;
+        out->sequence = seq;
+        out->time_ns = __atomic_load_n(&e->time_ns, __ATOMIC_RELAXED);
+        out->pid = __atomic_load_n(&e->pid, __ATOMIC_RELAXED);
+        out->x = __atomic_load_n(&e->x, __ATOMIC_RELAXED);
+        out->y = __atomic_load_n(&e->y, __ATOMIC_RELAXED);
+        out->reserved = 0;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
         if (__atomic_load_n(&e->sequence, __ATOMIC_ACQUIRE) != seq) continue;
         if (out->pid == pid && out->time_ns <= now && now - out->time_ns < CX_WHEEL_LEASE_NS) return true;
     }

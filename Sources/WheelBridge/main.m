@@ -27,7 +27,7 @@ static NSString *allowedWine;
 static BOOL testNoHID;
 static uint64_t lastClient, authUntil, lastPrune;
 static int requestFD;
-static void requests(CFFileDescriptorRef descriptor,CFOptionFlags flags,void *context);
+static void requests(void);
 static BOOL acceptedClient(int pid,uint64_t birth) {
     if (!birth || cx_wheel_process_birth(pid)!=birth) return NO;
     if (testNoHID) return YES;
@@ -74,7 +74,7 @@ static void stop(void) {
     IOHIDManagerUnscheduleFromRunLoop(manager,CFRunLoopGetMain(),kCFRunLoopCommonModes);
     IOHIDManagerClose(manager,0); CFRelease(manager); manager=NULL; [devices removeAllObjects];
 }
-static void requests(CFFileDescriptorRef descriptor,CFOptionFlags flags,void *context) {
+static void requests(void) {
     unsigned char bytes[sizeof(struct cx_wheel_request)+1];
     ssize_t n;
     while ((n=recv(requestFD,bytes,sizeof(bytes),MSG_DONTWAIT))>=0) {
@@ -94,9 +94,9 @@ static void requests(CFFileDescriptorRef descriptor,CFOptionFlags flags,void *co
             [clients removeObjectForKey:@(r.pid)];lastClient=cx_wheel_now();
         }
     }
-    if(descriptor)CFFileDescriptorEnableCallBacks(descriptor,kCFFileDescriptorReadCallBack);
 }
 static void tick(CFRunLoopTimerRef timer, void *context) {
+    requests();
     uint64_t now=cx_wheel_now();
     if(now-lastPrune>=UINT64_C(250000000)) {
         lastPrune=now;
@@ -164,13 +164,7 @@ int main(int argc,const char **argv) { @autoreleasepool {
     memset(bridge,0,sizeof(*bridge));bridge->version=1;bridge->pid=getpid();
     __atomic_store_n(&bridge->magic,CX_WHEEL_MAGIC,__ATOMIC_RELEASE);
     devices=[NSMutableSet new];clients=[NSMutableDictionary new];lastClient=cx_wheel_now();
-    CFFileDescriptorRef descriptor=CFFileDescriptorCreate(NULL,requestFD,false,requests,NULL);
-    CFRunLoopSourceRef source=CFFileDescriptorCreateRunLoopSource(NULL,descriptor,0);
-    CFRunLoopAddSource(CFRunLoopGetMain(),source,kCFRunLoopCommonModes);
-    CFFileDescriptorEnableCallBacks(descriptor,kCFFileDescriptorReadCallBack);
-    requests(NULL,0,NULL);
     CFRunLoopTimerRef timer=CFRunLoopTimerCreate(NULL,CFAbsoluteTimeGetCurrent(),0.02,0,0,tick,NULL);
     CFRunLoopAddTimer(CFRunLoopGetMain(),timer,kCFRunLoopCommonModes);
-    CFRunLoopRun();stop();CFFileDescriptorInvalidate(descriptor);CFRelease(source);CFRelease(descriptor);
-    CFRelease(timer);close(requestFD);return 0;
+    CFRunLoopRun();stop();CFRelease(timer);close(requestFD);return 0;
 }}

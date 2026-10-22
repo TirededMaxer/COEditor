@@ -294,7 +294,7 @@ final class TunerModel: ObservableObject {
         if file.sections[selected] == nil { selected="global" }
     }
     @discardableResult func save() -> Bool { do { try Storage.save(file);savedFile=file;message="已保存，重启对应游戏后生效";return true } catch {message="保存失败："+error.localizedDescription;return false} }
-    func refreshWheel() { wheelStatus = (try? Storage.manifest().wheelBridgeVersion) == 1 ? WheelReader.status():"滚轮驱动需要更新，尚未接入独立读取器" }
+    func refreshWheel() { wheelStatus = (try? Storage.manifest().wheelBridgeVersion) == 2 ? WheelReader.status():"滚轮驱动需要更新，尚未接入按需读取器" }
     func setupWheel() { do {try WheelReader.promptSetup();refreshWheel()}catch {message=error.localizedDescription} }
     func check() { refreshWheel();supportsFrameControl = (try? Storage.manifest().frameControlVersion) == 1;let r=Storage.maintain(repair:true);healthy=r.ok;environment="补丁引擎 \(r.runtime) · CrossOver \(r.installedCrossOver)\n"+r.notes.joined(separator:"\n") }
     func addGame(_ game:InstalledSteamGame,exe:GameExecutable) {
@@ -448,10 +448,14 @@ func runTests() throws {
     let restored=TuningFile(manual.serialized())
     try expect(restored.value("queue",in:"cs2.exe")==5 && restored.value("fps",in:"cs2.exe")==0 && restored.value("pacing",in:"cs2.exe")==0 && restored.value("stats",in:"cs2.exe")==1,"独立调整不得联动改写其他参数")
     try expect(TuningFile.initial.value("sync",in:"cs2.exe")==(-1) && TuningFile.initial.value("drawables",in:"cs2.exe")==0 && TuningFile.initial.value("queue",in:"cs2.exe")==0,"新配置画面应跟随游戏")
+    let agent=WheelReader.agentConfiguration(executable:"/reader",socket:"/socket")
+    try expect(agent["RunAtLoad"] as? Bool == false && agent["KeepAlive"] as? Bool == false,"滚轮读取器不得登录常驻")
+    try expect((agent["Sockets"] as? [String:Any])?["WheelRequests"] != nil,"按需读取必须注册 launchd socket")
+    try expect(WheelReaderStatus.description(nil,configured:true).contains("待命"),"无游戏时应显示待命而不是故障")
     let readerNow=Date().timeIntervalSince1970
-    let readerReady=Data("{\"protocol\":1,\"pid\":\(getpid()),\"state\":\"ready\",\"devices\":1,\"reports\":3,\"updated\":\(readerNow)}".utf8)
+    let readerReady=Data("{\"protocol\":2,\"pid\":\(getpid()),\"state\":\"ready\",\"devices\":1,\"reports\":3,\"updated\":\(readerNow)}".utf8)
     try expect(WheelReaderStatus.description(readerReady,now:readerNow).contains("就绪"),"读取器就绪应显示真实设备状态")
-    try expect(WheelReaderStatus.description(readerReady,now:readerNow+4).contains("未运行"),"过期状态不能显示就绪")
+    try expect(WheelReaderStatus.description(readerReady,now:readerNow+4).contains("尚未配置"),"过期状态不能显示就绪")
     try expect(WheelReaderStatus.description(nil).contains("原生滚动"),"无读取器必须明确回退状态")
     let denied=Data(String(decoding:readerReady,as:UTF8.self).replacingOccurrences(of:"ready",with:"permission-required").utf8)
     try expect(WheelReaderStatus.description(denied,now:readerNow).contains("缺少输入监控"),"文件存在不能覆盖授权失败")

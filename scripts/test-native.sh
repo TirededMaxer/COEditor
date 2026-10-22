@@ -27,3 +27,6 @@ part=patch.split('+++ b/dlls/winemac.drv/sevo_ui_policy.h\n',1)[1].split('--- ',
 PY_HEADER
 xcrun clang -Wall -Wextra -I "$out" "$repo_root/tests/sevo_ui_policy_test.c" -o "$out/sevo_ui_policy_test"
 "$out/sevo_ui_policy_test"
+
+xcrun clang -Wall -Wextra "$repo_root/tests/wheel_lease_client.c" -o "$out/wheel_lease_client"
+python3 "$repo_root/tests/test-wheel-lifecycle.py" --app "$repo_root/build/release/COEditor.app" --client "$out/wheel_lease_client"

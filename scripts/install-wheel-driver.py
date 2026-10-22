@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install a verified protocol-1 winemac driver into the existing 26.3 environment.
+"""Install a verified protocol-2 winemac driver into the existing 26.3 environment.
 
 Stop the Steam bottle first. This does not replace Wine, games, configuration,
 Sevoflurane, or their permissions. Keep one rollback driver outside the payload.
@@ -52,7 +52,7 @@ def main():
     if digest(target) != component['sha256'] or digest(payload) != component['sha256']:
         raise SystemExit('Installed driver or payload differs from the maintenance manifest')
     if b'[CXWheelBridge]' not in candidate.read_bytes():
-        raise SystemExit('Not a protocol-1 wheel driver')
+        raise SystemExit('Not a protocol-2 wheel driver')
     subprocess.run(['codesign', '--verify', '--strict', str(candidate)], check=True)
     if exports(candidate) != exports(target):
         raise SystemExit('Wine exported ABI differs; nothing installed')
@@ -62,20 +62,20 @@ def main():
     if any(runtime in row and ('wineloader' in row or 'wineserver' in row) for row in commands.splitlines()):
         raise SystemExit('The bottle is still running; stop Steam and its Wine server first')
     previous = component['sha256']
-    backup = support/'Backups/wheel-1.5.1/winemac.so'
+    backup = support/'Backups/wheel-1.5.2/winemac.so'
     if not backup.exists():
         backup.parent.mkdir(parents=True, exist_ok=True)
         atomic(backup, target.read_bytes())
-    elif digest(backup) != previous and manifest.get('wheelBridgeVersion') != 1:
+    elif digest(backup) != previous and manifest.get('wheelBridgeVersion') != 2:
         raise SystemExit('Unexpected rollback driver; preserve it and inspect manually')
     component['sha256'] = args.sha256
     component['allowedBefore'] = sorted(set(component['allowedBefore']+[previous]))
-    manifest['wheelBridgeVersion'] = 1
+    manifest['wheelBridgeVersion'] = 2
     atomic(payload, candidate.read_bytes())
     atomic(manifest_path, (json.dumps(manifest, indent=2)+'\n').encode())
     atomic(target, candidate.read_bytes())
     assert digest(target) == digest(payload) == args.sha256
-    print('Installed protocol-1 wheel driver; input and frame settings preserved')
+    print('Installed protocol-2 wheel driver; input and frame settings preserved')
 
 
 if __name__ == '__main__':

@@ -1,11 +1,34 @@
 /* Physical wheel access belongs to the separately authorized, retained reader.
  * Wine never requests global input permission. All state is per process. */
 static const struct cx_wheel_bridge *cx_wheel_shared;
-static CFRunLoopTimerRef cx_wheel_timer;
+static CFRunLoopTimerRef cx_wheel_timer, cx_wheel_client_timer;
+static uint64_t cx_wheel_client_birth;
 static uint64_t cx_wheel_cursor, cx_wheel_delivered;
 static uint32_t cx_wheel_reader_pid;
 static int cx_wheel_last_state = -1;
 static uint64_t cx_wheel_last_open, cx_wheel_focus_generation;
+
+/* Registration is independent of focus; switching windows must not end a game.
+ * The low-frequency ping also recovers a reader that quit unexpectedly. */
+static void cx_wheel_release_client(void)
+{
+    if (cx_wheel_client_birth) cx_wheel_send_request(CX_WHEEL_DETACH, getpid(), cx_wheel_client_birth);
+}
+static void cx_wheel_client_ping(CFRunLoopTimerRef timer, void *context)
+{
+    cx_wheel_send_request(CX_WHEEL_ATTACH, getpid(), cx_wheel_client_birth);
+}
+static void cx_begin_wheel_client(void)
+{
+    struct cx_tuner_settings tuning = cx_tuner_read();
+    const char *mode = tuning.loaded ? (tuning.wheel ? "hid" : "off") : getenv("CX_WHEEL_INPUT");
+    if (cx_wheel_client_timer || !mode || strcmp(mode, "hid") || !cx_wheel_game_program(getprogname())) return;
+    if (!(cx_wheel_client_birth = cx_wheel_process_birth(getpid()))) return;
+    cx_wheel_client_ping(NULL, NULL);
+    atexit(cx_wheel_release_client);
+    cx_wheel_client_timer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent() + 2, 2, 0, 0, cx_wheel_client_ping, NULL);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), cx_wheel_client_timer, kCFRunLoopCommonModes);
+}
 
 static bool cx_wheel_open_bridge(void)
 {
@@ -75,7 +98,8 @@ static void cx_start_raw_wheel(void)
     struct cx_tuner_settings tuning = cx_tuner_read();
     const char *mode = tuning.loaded ? (tuning.wheel ? "hid" : "off") : getenv("CX_WHEEL_INPUT");
     if (!mode || strcmp(mode, "hid")) { cx_wheel_delivered = 0; cx_stop_raw_wheel(); return; }
-    if (cx_wheel_timer) return;
+    cx_begin_wheel_client();
+    if (!cx_wheel_client_timer || cx_wheel_timer) return;
     ++cx_wheel_focus_generation;
     if (cx_wheel_now() - cx_wheel_delivered >= CX_WHEEL_TAIL_NS) cx_wheel_delivered = 0;
     cx_wheel_open_bridge();

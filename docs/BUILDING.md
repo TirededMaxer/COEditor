@@ -144,7 +144,7 @@ build/metal_frame_probe
 
 ## 1.5 独立滚轮组件与已有运行时升级
 
-`build-app.sh` 在云端编译并签名 `COEditor Wheel.app`，放入 DMG 的应用资源中。首次安装由用户确认后调用 `--install-wheel-helper --request-access`；该操作建立独立用户 LaunchAgent 并向系统申请权限，不写 TCC 数据库。协议 1 组件有安装收据，后续保留原二进制和签名。
+`build-app.sh` 在云端编译并签名 `COEditor Wheel.app`，放入 DMG 的应用资源中。首次安装由用户确认后调用 `--install-wheel-helper --request-access`；该操作建立独立用户 LaunchAgent 并向系统申请权限，不写 TCC 数据库。协议 2 组件有安装收据，后续保留原二进制和签名。1.5.2 通过 launchd 的 `Sockets/WheelRequests` 按需激活，`RunAtLoad=false`、`KeepAlive=false`。没有游戏时无读取器进程；首次授权设置可短暂运行最多两分钟。CI 用禁用 HID 的隔离 LaunchAgent 验证真实的按需启动、多个使用者、崩溃清理和退出后再唤起，不申请系统输入权限。
 
 针对已经验证的相同 26.3 引擎，可从同一提交的 Wine artifact 提取 `winemac.so`，核对云端来源、签名、SHA256 和 ABI 导出，停止 Steam 容器及其 Wine server 后执行：
 

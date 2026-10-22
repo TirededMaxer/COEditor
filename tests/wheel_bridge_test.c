@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include "../Sources/WheelBridge/wheel_bridge.h"
+#include "../Sources/WheelBridge/wheel_activation.h"
 #define CHECK(c) do {if(!(c)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#c);return 1;}}while(0)
 static struct cx_wheel_bridge concurrent;
 static int done;
@@ -13,6 +14,11 @@ static void *producer(void *unused) {
     __atomic_store_n(&done,1,__ATOMIC_RELEASE);return NULL;
 }
 int main(void) {
+    CHECK(sizeof(struct cx_wheel_request)==32);
+    CHECK(cx_wheel_game_program("cs2.exe") && cx_wheel_game_program("OtherGame.EXE"));
+    CHECK(!cx_wheel_game_program("steam.exe") && !cx_wheel_game_program("SteamWebHelper.EXE"));
+    CHECK(!cx_wheel_game_program("wineboot.exe") && !cx_wheel_game_program("reg.exe") && !cx_wheel_game_program("cmd.exe"));
+    CHECK(cx_wheel_process_birth(getpid())!=0 && cx_wheel_process_birth(-1)==0);
     struct cx_wheel_bridge b={0}; struct cx_wheel_event e; uint64_t c=0,now=UINT64_C(5000000000);
     CHECK(sizeof(e)==32 && sizeof(b)==8232);
     CHECK(!cx_wheel_live(&b,now));

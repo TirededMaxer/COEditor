@@ -15,7 +15,7 @@ helper="$app/Contents/Resources/COEditor Wheel.app"
 mkdir -p "$helper/Contents/MacOS"
 xcrun clang "$c_optimization" -Wall -Wextra -Wno-unused-parameter -fobjc-arc -target arm64-apple-macosx13.0 "$repo_root/Sources/WheelBridge/main.m" -o "$helper/Contents/MacOS/COEditorWheel" -framework AppKit -framework IOKit
 cp "$repo_root/Resources/WheelInfo.plist" "$helper/Contents/Info.plist"
-codesign --force --sign - --identifier local.coeditor.wheel.protocol1 "$helper"
+codesign --force --sign - --identifier local.coeditor.wheel.protocol2 "$helper"
 codesign --verify --strict "$helper"
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"

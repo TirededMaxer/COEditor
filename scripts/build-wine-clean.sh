@@ -29,6 +29,12 @@ clang --target=x86_64-w64-windows-gnu -O2 -ffreestanding -fno-stack-protector \
 lld-link /entry:mainCRTStartup /subsystem:windows /nodefaultlib \
   "/out:$repo_root/build/proxy/coeditor-probe.exe" "$repo_root/build/proxy/probe.obj" \
   "$wine_build/dlls/kernel32/x86_64-windows/libkernel32.a" "$wine_build/dlls/user32/x86_64-windows/libuser32.a"
+clang --target=x86_64-w64-windows-gnu -O2 -ffreestanding -fno-stack-protector \
+  -Wno-dll-attribute-on-redeclaration -I "$wine_build/include" -I "$wine_source/include/msvcrt" -I "$wine_source/include" \
+  -c "$repo_root/tests/wheel_input_probe.c" -o "$repo_root/build/proxy/wheel-probe.obj"
+lld-link /entry:mainCRTStartup /subsystem:windows /nodefaultlib \
+  "/out:$repo_root/build/proxy/wheel-input-probe.exe" "$repo_root/build/proxy/wheel-probe.obj" \
+  "$wine_build/dlls/kernel32/x86_64-windows/libkernel32.a" "$wine_build/dlls/user32/x86_64-windows/libuser32.a"
 components="$repo_root/build/wine-components"
 mkdir -p "$components"
 for name in ntdll win32u; do
@@ -38,6 +44,7 @@ cp "$wine_build/dlls/winemac.drv/winemac.so" "$components/"
 cp "$wine_build/server/wineserver" "$components/"
 cp "$repo_root/build/proxy/d3d11.dll" "$components/"
 cp "$repo_root/build/proxy/coeditor-probe.exe" "$components/"
+cp "$repo_root/build/proxy/wheel-input-probe.exe" "$components/"
 for name in ntdll.so win32u.so winemac.so wineserver; do
   codesign --force --sign - "$components/$name"
   codesign --verify --strict "$components/$name"

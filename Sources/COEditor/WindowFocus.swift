@@ -11,6 +11,20 @@ final class TunerWindow:NSWindow {
     }
     func clearInputFocus() {if let view=contentView {makeFirstResponder(view)}}
     override func resignKey() {clearInputFocus();super.resignKey()}
+    override func sendEvent(_ event:NSEvent) {
+        if event.type == .leftMouseDown,let content=contentView,
+           let editor=firstResponder as? NSTextView,editor.isFieldEditor {
+            var hit=content.hitTest(content.convert(event.locationInWindow,from:nil))
+            var textInput=false
+            while let node=hit {
+                if let field=node as? NSTextField,field.isEditable {textInput=true;break}
+                if let text=node as? NSTextView,text.isEditable {textInput=true;break}
+                hit=node.superview
+            }
+            if !textInput {clearInputFocus()}
+        }
+        super.sendEvent(event)
+    }
 }
 
 func runWindowFocusTests() throws {
@@ -37,10 +51,22 @@ func runWindowFocusTests() throws {
     try expect(model.file==saved && field.currentEditor()==nil,"默认焦点下按键不得编辑帧率")
     field.selectText(nil)
     try expect(field.currentEditor() != nil,"用户主动选择后必须仍能编辑")
+    // The form has 22 pt padding, so this point lies in its actual blank area.
+    let blank=view.convert(NSPoint(x:5,y:5),to:nil)
+    for type in [NSEvent.EventType.leftMouseDown,.leftMouseUp] {
+        guard let event=NSEvent.mouseEvent(with:type,location:blank,modifierFlags:[],timestamp:0,windowNumber:window.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:1) else {throw TunerError.message("无法创建空白点击事件")}
+        window.sendEvent(event)
+    }
+    RunLoop.current.run(until:Date().addingTimeInterval(0.05))
+    try expect(field.currentEditor()==nil,"点击空白处必须结束数字编辑")
+    strayKey()
+    try expect(model.file==saved && !model.hasUnsavedChanges,"空白处取消焦点后误触键盘不得修改参数")
+    field.selectText(nil)
+    try expect(field.currentEditor() != nil,"取消编辑后必须能再次主动编辑输入框")
     window.resignKey();window.makeKey()
     RunLoop.current.run(until:Date().addingTimeInterval(0.05))
     try expect(window.firstResponder === view && field.currentEditor()==nil,"返回窗口时不得保留数字输入焦点")
     strayKey()
     try expect(model.file==saved && !model.hasUnsavedChanges,"切回窗口后误触按键不得修改参数")
-    print("PASS: actual FPS field has no startup focus, explicit editing works, returning clears focus, stray keys preserve settings")
+    print("PASS: actual FPS field has no startup focus, blank click ends editing, editing can resume, returning clears focus, stray keys preserve settings")
 }

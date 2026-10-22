@@ -37,6 +37,7 @@ jobs:
             ./scripts/build-app.sh "$mode"
             "build/$mode/COEditor.app/Contents/MacOS/CrossOverTuner" --self-test
             "build/$mode/COEditor.app/Contents/MacOS/CrossOverTuner" --library-test
+            "build/$mode/COEditor.app/Contents/MacOS/CrossOverTuner" --focus-test
           done
           ./scripts/test-native.sh
           python3 -m unittest discover -s tests -p 'test_*.py'

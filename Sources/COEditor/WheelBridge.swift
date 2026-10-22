@@ -1,6 +1,14 @@
 import AppKit
 import CryptoKit
 
+struct WheelReaderPresentation: Equatable {
+    enum State { case notInstalled, warning, healthy }
+    var state:State
+    var text:String
+    var isHealthy:Bool { state == .healthy }
+    var symbol:String { isHealthy ? "checkmark.circle.fill":"exclamationmark.triangle.fill" }
+    static let notInstalled=Self(state:.notInstalled,text:"滚轮组件未安装；当前使用原生滚动")
+}
 struct WheelReaderStatus: Decodable {
     var `protocol`:Int
     var pid:Int32
@@ -9,19 +17,25 @@ struct WheelReaderStatus: Decodable {
     var reports:UInt64
     var clients:Int?
     var updated:Double
-    static func description(_ data:Data?,configured:Bool=false,now:Double=Date().timeIntervalSince1970)->String {
-        let idle="滚轮读取器待命，游戏启动时自动唤起"
-        guard let data,let s=try? JSONDecoder().decode(Self.self,from:data),s.protocol==2,
-              now>=s.updated,now-s.updated<3,kill(s.pid,0)==0 else {
-            return configured ? idle:"滚轮读取器尚未配置；当前使用原生滚动"
+    var openError:UInt32?
+    static func presentation(_ data:Data?,installed:Bool,installationIssue:String?=nil,configured:Bool=false,runningPID:Int32?=nil,now:Double=Date().timeIntervalSince1970)->WheelReaderPresentation {
+        func warning(_ text:String)->WheelReaderPresentation { .init(state:.warning,text:text) }
+        guard installed else {return .notInstalled}
+        if let issue=installationIssue {return warning(issue)}
+        guard configured else {return warning("滚轮组件已安装，但按需启动入口未注册；请重新设置组件")}
+        guard let runningPID else {return .init(state:.healthy,text:"滚轮组件已安装，读取器待命；游戏启动时自动唤起")}
+        guard let data,let s=try? JSONDecoder().decode(Self.self,from:data),s.protocol==2,s.pid==runningPID,
+              now>=s.updated,now-s.updated<3 else {
+            return warning("滚轮读取器正在启动或状态未更新；请稍后检查")
         }
         switch s.state {
-        case "ready":return "滚轮读取器就绪 · \(s.clients ?? 0) 个程序 · \(s.devices) 个设备 · \(s.reports) 次物理报告"
-        case "permission-required":return "滚轮读取器缺少输入监控授权；当前使用原生滚动"
-        case "no-device":return "滚轮读取器已授权，未检测到实体滚轮；当前使用原生滚动"
-        case "setup":return "正在设置滚轮读取器，等待系统授权"
-        case "idle":return idle
-        default:return "滚轮设备打开失败；当前使用原生滚动"
+        case "ready" where s.devices>0:return .init(state:.healthy,text:"滚轮读取器就绪 · \(s.clients ?? 0) 个程序 · \(s.devices) 个设备 · \(s.reports) 次物理报告")
+        case "permission-required":return warning("滚轮读取器缺少输入监控授权；当前使用原生滚动")
+        case "no-device","ready":return warning("滚轮读取器已授权，未检测到实体滚轮；当前使用原生滚动")
+        case "setup":return warning("正在设置滚轮读取器，等待系统授权")
+        case "idle":return .init(state:.healthy,text:"滚轮组件已安装，读取器待命；游戏启动时自动唤起")
+        case "open-error":return warning("滚轮设备打开失败\(s.openError.map {"（错误码 0x"+String($0,radix:16)+"）"} ?? "")；当前使用原生滚动")
+        default:return warning("滚轮读取器状态异常；请重新检查组件")
         }
     }
 }
@@ -33,11 +47,28 @@ struct WheelReader {
     static let socketDirectory=Storage.fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COEditor")
     static let socketURL=socketDirectory.appendingPathComponent("wheel.sock")
     struct Receipt:Codable {var version:Int;var hash:String}
-    static func status()->String {
-        let receipt=try? JSONDecoder().decode(Receipt.self,from:Data(contentsOf:record))
+    static func status(driverSupported:Bool=true)->WheelReaderPresentation {
+        guard Storage.fm.fileExists(atPath:installed.path) else {return .notInstalled}
+        let executable=installed.appendingPathComponent("Contents/MacOS/COEditorWheel")
+        var issue:String?
+        if !Storage.fm.isExecutableFile(atPath:executable.path) {issue="滚轮组件安装不完整，缺少可执行文件；请重新安装"}
+        else if let receipt=try? JSONDecoder().decode(Receipt.self,from:Data(contentsOf:record)) {
+            if receipt.version != 2 {issue="滚轮组件版本需要更新；请重新设置组件"}
+            else if (try? Storage.hash(executable)) != receipt.hash {issue="滚轮组件文件校验失败；请检查安装"}
+        } else {issue="滚轮组件安装记录缺失或损坏；请重新设置组件"}
+        if issue==nil && !driverSupported {issue="滚轮驱动需要更新，尚未接入按需读取器"}
         let data=try? Data(contentsOf:directory.appendingPathComponent("status.json"))
-        let loaded = receipt?.version==2 && ((try? run("/bin/launchctl",["print","gui/\(getuid())/"+label],allowFailure:true))==0)
-        return WheelReaderStatus.description(data,configured:loaded)
+        let job=Process();job.executableURL=URL(fileURLWithPath:"/bin/launchctl");job.arguments=["print","gui/\(getuid())/"+label]
+        let pipe=Pipe();job.standardOutput=pipe;job.standardError=FileHandle.nullDevice
+        var loaded=false,pid:Int32?
+        do {
+            try job.run();let output=String(decoding:pipe.fileHandleForReading.readDataToEndOfFile(),as:UTF8.self);job.waitUntilExit();loaded=job.terminationStatus==0
+            for line in output.components(separatedBy:.newlines) {
+                let parts=line.trimmingCharacters(in:.whitespaces).components(separatedBy:" = ")
+                if parts.count==2 && parts[0]=="pid" {pid=Int32(parts[1])}
+            }
+        } catch {issue=issue ?? "无法检查滚轮组件的按需启动入口"}
+        return WheelReaderStatus.presentation(data,installed:true,installationIssue:issue,configured:loaded,runningPID:pid)
     }
     @discardableResult static func run(_ path:String,_ arguments:[String],allowFailure:Bool=false)throws->Int32 {
         let p=Process();p.executableURL=URL(fileURLWithPath:path);p.arguments=arguments

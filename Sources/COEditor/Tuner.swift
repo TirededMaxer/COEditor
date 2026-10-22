@@ -224,7 +224,7 @@ final class TunerModel: ObservableObject {
     @Published var showGamePicker = false
     @Published var showFrameStats = false
     @Published var supportsFrameControl = false
-    @Published var wheelStatus = ""
+    @Published var wheelStatus = WheelReaderPresentation.notInstalled
     private var savedFile = TuningFile.initial
     init(loadEnvironment:Bool = true) { if loadEnvironment { reload();check();refreshGames() } }
     var hasUnsavedChanges:Bool { file != savedFile }
@@ -294,7 +294,7 @@ final class TunerModel: ObservableObject {
         if file.sections[selected] == nil { selected="global" }
     }
     @discardableResult func save() -> Bool { do { try Storage.save(file);savedFile=file;message="已保存，重启对应游戏后生效";return true } catch {message="保存失败："+error.localizedDescription;return false} }
-    func refreshWheel() { wheelStatus = (try? Storage.manifest().wheelBridgeVersion) == 2 ? WheelReader.status():"滚轮驱动需要更新，尚未接入按需读取器" }
+    func refreshWheel() { wheelStatus = WheelReader.status(driverSupported:(try? Storage.manifest().wheelBridgeVersion) == 2) }
     func setupWheel() { do {try WheelReader.promptSetup();refreshWheel()}catch {message=error.localizedDescription} }
     func check() { refreshWheel();supportsFrameControl = (try? Storage.manifest().frameControlVersion) == 1;let r=Storage.maintain(repair:true);healthy=r.ok;environment="补丁引擎 \(r.runtime) · CrossOver \(r.installedCrossOver)\n"+r.notes.joined(separator:"\n") }
     func addGame(_ game:InstalledSteamGame,exe:GameExecutable) {
@@ -356,6 +356,7 @@ struct TunerView:View {
     @ObservedObject var model:TunerModel
     var resize:(CGFloat)->Void
     @State private var contentHeight:CGFloat=650
+    @FocusState private var frameLimitFocused:Bool
     var body:some View {
         ScrollView { VStack(alignment:.leading,spacing:12) {
             HStack { Image(systemName:"slider.horizontal.3").font(.system(size:30)).foregroundStyle(.blue);VStack(alignment:.leading){Text("COEditor").font(.title2.bold());Text("Steam 容器").foregroundStyle(.secondary)};Spacer() }
@@ -379,7 +380,7 @@ struct TunerView:View {
                     Toggle("按游戏限帧",isOn:Binding(get:{model.get("fps") != 0},set:{model.setFrameLimitEnabled($0)}))
                     HStack {
                         Text("帧率上限").frame(width:135,alignment:.leading)
-                        TextField("FPS",value:Binding(get:{max(1,model.get("fps"))},set:{if model.get("fps") != 0 {model.set("fps",min(1000,max(1,$0)))}}),formatter:NumberFormatter.coeditorInteger).frame(width:75)
+                        TextField("FPS",value:Binding(get:{max(1,model.get("fps"))},set:{if model.get("fps") != 0 {model.set("fps",min(1000,max(1,$0)))}}),formatter:NumberFormatter.coeditorInteger).frame(width:75).focused($frameLimitFocused).onSubmit {frameLimitFocused=false}
                         Stepper("",value:Binding(get:{max(1,model.get("fps"))},set:{if model.get("fps") != 0 {model.set("fps",$0)}}),in:1...1000).labelsHidden()
                         Text("FPS").foregroundStyle(.secondary);Spacer()
                     }.disabled(model.get("fps")==0)
@@ -400,7 +401,7 @@ struct TunerView:View {
                     Text("保留已验收的 macOS 原生处理手感；关闭后使用原引擎输入。").font(.caption).foregroundStyle(.secondary)
                     Toggle("滚轮刻度优化",isOn:model.binding("wheel")).disabled(!model.isGlobal && model.file.sections[model.selected]?["wheel"] == nil)
                     Text("实体鼠标按 Windows 刻度处理，触控板保留原生滚动。").font(.caption).foregroundStyle(.secondary)
-                    HStack(alignment:.top) {Image(systemName:model.wheelStatus.hasPrefix("滚轮读取器就绪") ? "checkmark.circle.fill":"exclamationmark.triangle.fill").foregroundStyle(model.wheelStatus.hasPrefix("滚轮读取器就绪") ? .green:.orange);Text(model.wheelStatus).font(.caption).textSelection(.enabled);Spacer();Button("设置滚轮组件…"){model.setupWheel()}}
+                    HStack(alignment:.top) {Image(systemName:model.wheelStatus.symbol).foregroundStyle(model.wheelStatus.isHealthy ? .green:.orange);Text(model.wheelStatus.text).font(.caption).textSelection(.enabled);Spacer();Button("设置滚轮组件…"){model.setupWheel()}}
                 }.frame(maxWidth:.infinity,alignment:.leading).padding(9)
             }
             HStack(alignment:.top) {Image(systemName:model.healthy ? "checkmark.circle.fill":"exclamationmark.triangle.fill").foregroundStyle(model.healthy ? .green:.orange);Text(model.environment).font(.caption).textSelection(.enabled);Spacer();Button("检查环境"){model.check()} }
@@ -409,6 +410,9 @@ struct TunerView:View {
         }.padding(22).frame(width:600).fixedSize(horizontal:false,vertical:true).disabled(model.busy)
         .background(GeometryReader{geometry in Color.clear.preference(key:ContentHeightKey.self,value:geometry.size.height)})
         }.frame(width:620,height:min(contentHeight,(NSScreen.main?.visibleFrame.height ?? 900)-70))
+        .onChange(of:model.selected){_ in frameLimitFocused=false}
+        .onReceive(NotificationCenter.default.publisher(for:NSApplication.didResignActiveNotification)){_ in frameLimitFocused=false}
+        .onExitCommand {frameLimitFocused=false}
         .onReceive(Timer.publish(every:2,on:.main,in:.common).autoconnect()){_ in model.refreshWheel()}
         .onPreferenceChange(ContentHeightKey.self){height in if abs(contentHeight-height)>1 {contentHeight=height;resize(height)}}
         .sheet(isPresented:$model.showFrameStats){FrameStatsView(profile:model.selected,name:model.label(model.selected))}
@@ -418,9 +422,10 @@ struct TunerView:View {
 final class AppDelegate:NSObject,NSApplicationDelegate {
     var window:NSWindow!
     func applicationDidFinishLaunching(_ notification:Notification) {
-        let model=TunerModel();let view=NSHostingView(rootView:TunerView(model:model,resize:{[weak self] height in DispatchQueue.main.async {guard let window=self?.window else{return};let top=window.frame.maxY;window.setContentSize(NSSize(width:620,height:min(height,(window.screen?.visibleFrame.height ?? 900)-70)));window.setFrameOrigin(NSPoint(x:window.frame.minX,y:top-window.frame.height));let metrics:[String:Double]=["contentHeight":height,"windowContentHeight":window.contentRect(forFrameRect:window.frame).height];if let data=try? JSONEncoder().encode(metrics){try? data.write(to:Storage.support.appendingPathComponent("Tests/window-layout.json"),options:.atomic)}}}))
-        window=NSWindow(contentRect:NSRect(x:0,y:0,width:644,height:760),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)
-        window.title="COEditor";window.contentView=view;window.setContentSize(view.fittingSize);window.center();window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)
+        let model=TunerModel();let view=TunerHostingView(rootView:TunerView(model:model,resize:{[weak self] height in DispatchQueue.main.async {guard let window=self?.window else{return};let top=window.frame.maxY;window.setContentSize(NSSize(width:620,height:min(height,(window.screen?.visibleFrame.height ?? 900)-70)));window.setFrameOrigin(NSPoint(x:window.frame.minX,y:top-window.frame.height));let metrics:[String:Double]=["contentHeight":height,"windowContentHeight":window.contentRect(forFrameRect:window.frame).height];if let data=try? JSONEncoder().encode(metrics){try? data.write(to:Storage.support.appendingPathComponent("Tests/window-layout.json"),options:.atomic)}}}))
+        let tunerWindow=TunerWindow(contentRect:NSRect(x:0,y:0,width:644,height:760),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)
+        window=tunerWindow
+        window.title="COEditor";tunerWindow.installContent(view);window.setContentSize(view.fittingSize);window.center();window.makeKeyAndOrderFront(nil);tunerWindow.clearInputFocus();NSApp.activate(ignoringOtherApps:true)
         let menu=NSMenu();let item=NSMenuItem();menu.addItem(item);let appMenu=NSMenu();appMenu.addItem(withTitle:"退出 COEditor",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q");item.submenu=appMenu;NSApp.mainMenu=menu
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {true}
@@ -451,14 +456,7 @@ func runTests() throws {
     let agent=WheelReader.agentConfiguration(executable:"/reader",socket:"/socket")
     try expect(agent["RunAtLoad"] as? Bool == false && agent["KeepAlive"] as? Bool == false,"滚轮读取器不得登录常驻")
     try expect((agent["Sockets"] as? [String:Any])?["WheelRequests"] != nil,"按需读取必须注册 launchd socket")
-    try expect(WheelReaderStatus.description(nil,configured:true).contains("待命"),"无游戏时应显示待命而不是故障")
-    let readerNow=Date().timeIntervalSince1970
-    let readerReady=Data("{\"protocol\":2,\"pid\":\(getpid()),\"state\":\"ready\",\"devices\":1,\"reports\":3,\"updated\":\(readerNow)}".utf8)
-    try expect(WheelReaderStatus.description(readerReady,now:readerNow).contains("就绪"),"读取器就绪应显示真实设备状态")
-    try expect(WheelReaderStatus.description(readerReady,now:readerNow+4).contains("尚未配置"),"过期状态不能显示就绪")
-    try expect(WheelReaderStatus.description(nil).contains("原生滚动"),"无读取器必须明确回退状态")
-    let denied=Data(String(decoding:readerReady,as:UTF8.self).replacingOccurrences(of:"ready",with:"permission-required").utf8)
-    try expect(WheelReaderStatus.description(denied,now:readerNow).contains("缺少输入监控"),"文件存在不能覆盖授权失败")
+    try runWheelStatusTests()
     try runFrameStatsTests()
     let controls=TuningFile("[global]\nqueue=16\nfps=120\nstats=1\npacing=2\n[cs2.exe]\nfps=90\n")
     try controls.validate()
@@ -510,7 +508,9 @@ func runTests() throws {
 if CommandLine.arguments.contains("--install-wheel-helper") {
     do {try WheelReader.install(requestAccess:CommandLine.arguments.contains("--request-access"));print(WheelReader.installed.path);exit(0)}catch {fputs("\(error.localizedDescription)\n",stderr);exit(1)}
 } else if CommandLine.arguments.contains("--wheel-status") {
-    print(WheelReader.status());exit(0)
+    print(WheelReader.status(driverSupported:(try? Storage.manifest().wheelBridgeVersion) == 2).text);exit(0)
+} else if CommandLine.arguments.contains("--focus-test") {
+    do {try runWindowFocusTests();exit(0)}catch {fputs("\(error)\n",stderr);exit(1)}
 } else if CommandLine.arguments.contains("--list-games") {
     do {let games=try SteamLibrary.scan();let encoder=JSONEncoder();encoder.outputFormatting=[.prettyPrinted,.sortedKeys,.withoutEscapingSlashes];print(String(data:try encoder.encode(games),encoding:.utf8)!);exit(0)}catch {fputs("\(error)\n",stderr);exit(1)}
 } else if CommandLine.arguments.contains("--library-test") {

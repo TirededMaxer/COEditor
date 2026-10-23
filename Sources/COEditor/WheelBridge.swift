@@ -96,10 +96,17 @@ struct WheelReader {
         let fd=socket(AF_UNIX,SOCK_DGRAM,0);guard fd>=0 else {throw TunerError.message("无法打开滚轮通信")};defer{close(fd)}
         // Four fixed-width little-endian words = protocol-2 C request (32 bytes).
         let words:[UInt64]=[0x4358575245513032,UInt64(3)<<32|2,0,0]
-        let sent=words.withUnsafeBytes{bytes in withUnsafePointer(to:&address){pointer in
-            pointer.withMemoryRebound(to:sockaddr.self,capacity:1){sendto(fd,bytes.baseAddress,bytes.count,0,$0,socklen_t(MemoryLayout<sockaddr_un>.size))}
-        }}
-        guard sent==32 else {throw TunerError.message("无法唤起滚轮读取器，请重新检查环境")}
+        // bootstrap can return before launchd has bound its activation socket.
+        for attempt in 0..<20 {
+            let sent=words.withUnsafeBytes{bytes in withUnsafePointer(to:&address){pointer in
+                pointer.withMemoryRebound(to:sockaddr.self,capacity:1){sendto(fd,bytes.baseAddress,bytes.count,0,$0,socklen_t(MemoryLayout<sockaddr_un>.size))}
+            }}
+            if sent==32 {return}
+            let error=errno
+            guard sent<0 && [ENOENT,ECONNREFUSED].contains(error) && attempt<19 else {break}
+            Thread.sleep(forTimeInterval:0.05)
+        }
+        throw TunerError.message("无法唤起滚轮读取器，请重新检查环境")
     }
     // Retain a validated current reader across editor/Sevoflurane updates.
     // Revision 3 fixes false client expiry caused by CrossOver's hard links.

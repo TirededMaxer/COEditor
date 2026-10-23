@@ -50,13 +50,13 @@ Metal 设置适用于补丁中的 D3DMetal 路径；不会自动改变 DXVK / DX
 
 帧率上限输入框不会在打开或切回应用时自动获得输入焦点；点击后可编辑，点击空白处、按回车或 Esc 结束编辑。
 
-## 独立滚轮读取器（1.5.5）
+## 独立滚轮读取器（1.5.6）
 
 1.5 的 Wine 驱动从独立 **COEditor Wheel.app** 接收滚轮，权限不再由 Sevoflurane 或它的后台程序承担。从同一 Release 下载 `COEditor-Wine-26.3-x86_64.tar.gz` 并按 [集成说明](docs/BUILDING.md) 安装匹配的 1.5 Wine 组件，再在 COEditor 点击“设置滚轮组件…”，确认组件路径与权限用途；在系统“隐私与安全性 → 输入监控”允许 **COEditor Wheel**。如 macOS 要求重启组件，按系统提示操作。
 
 组件安装在 `~/Library/Application Support/CrossOver/CustomRuntimes/.tuner-support/Wheel/COEditor Wheel.app`。它没有操作窗口或 Dock 图标。系统仅保留一个按需唤起入口，**不在登录时启动进程，也不在空闲时常驻**：启用滚轮优化的游戏启动后通过本地 socket 登记，launchd 唤起读取器；多个游戏共用一个读取器，最后一个使用它的程序退出约 1 秒后，读取器退出。进程崩溃同样会自动清理；切换前后台不会被误判为游戏退出。Steam 客户端、Overlay 和 Wine 系统工具不登记需求。
 
-Sevoflurane 更新不会替换读取器，COEditor 更新也保留校验通过的协议 2 组件及其签名。1.5.1 的常驻协议 1 会迁移到按需协议 2，移除旧启动项；组件代码本身升级可能需要重新授权。通信 socket 位于 `~/Library/Application Support/COEditor/wheel.sock`，目录和 socket 仅当前用户可用。读取器验证 PID、进程创建时间和已配置 Wine 引擎的执行路径，只向已登记的前台进程发布物理滚轮。
+Sevoflurane 更新不会替换读取器，COEditor 更新也保留校验通过且达到所需修订版的组件及其签名。1.5.6 需将旧读取器一次性更新到 2.0.1（修订版 3），在“设置滚轮组件…”完成；组件代码升级可能需要重新确认输入监控授权。通信协议仍为 2，无需替换已有 1.5.2 Wine 驱动。通信 socket 位于 `~/Library/Application Support/COEditor/wheel.sock`，目录和 socket 仅当前用户可用。读取器验证用户、PID、进程创建时间及已配置 Wine 文件的设备号和 inode，只向已登记的前台进程发布物理滚轮。CrossOver 的临时 EXE 是同一 Wine 文件的硬链接，路径名称变化不会再误判为游戏退出；复制到其他位置的不同文件仍被拒绝。
 
 读取器只处理实体设备的相对滚轮元素，不处理键盘和鼠标移动；物理报告写入仅当前用户可读的固定大小内存环，标记前台进程。Wine 只消费发给自身的事件。切换前后台不重新打开 HID 设备，设备热插拔由同一个管理器处理；授权失败会每秒复查，设备打开失败也会重试。读取器心跳超过 250 ms 即停止使用；实际投递成功后才抑制原生/Mos 副本，首次副本短暂等待 16 ms 以覆盖两条路径的到达顺序。触控板带手势阶段的事件保留原生路径。
 

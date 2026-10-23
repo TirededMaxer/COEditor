@@ -46,14 +46,20 @@ struct WheelReader {
     static let label="local.coeditor.wheel.protocol2"
     static let socketDirectory=Storage.fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COEditor")
     static let socketURL=socketDirectory.appendingPathComponent("wheel.sock")
-    struct Receipt:Codable {var version:Int;var hash:String}
+    static let requiredRevision=3
+    struct Receipt:Codable {
+        var version:Int
+        var revision:Int?
+        var hash:String
+        var needsUpgrade:Bool {version != 2 || (revision ?? 2)<WheelReader.requiredRevision}
+    }
     static func status(driverSupported:Bool=true)->WheelReaderPresentation {
         guard Storage.fm.fileExists(atPath:installed.path) else {return .notInstalled}
         let executable=installed.appendingPathComponent("Contents/MacOS/COEditorWheel")
         var issue:String?
         if !Storage.fm.isExecutableFile(atPath:executable.path) {issue="滚轮组件安装不完整，缺少可执行文件；请重新安装"}
         else if let receipt=try? JSONDecoder().decode(Receipt.self,from:Data(contentsOf:record)) {
-            if receipt.version != 2 {issue="滚轮组件版本需要更新；请重新设置组件"}
+            if receipt.needsUpgrade {issue="滚轮组件版本需要更新；请重新设置组件"}
             else if (try? Storage.hash(executable)) != receipt.hash {issue="滚轮组件文件校验失败；请检查安装"}
         } else {issue="滚轮组件安装记录缺失或损坏；请重新设置组件"}
         if issue==nil && !driverSupported {issue="滚轮驱动需要更新，尚未接入按需读取器"}
@@ -95,8 +101,8 @@ struct WheelReader {
         }}
         guard sent==32 else {throw TunerError.message("无法唤起滚轮读取器，请重新检查环境")}
     }
-    // Retain a validated protocol-2 reader across editor/Sevoflurane updates.
-    // Protocol 1 is upgraded once because it cannot exit with its last game.
+    // Retain a validated current reader across editor/Sevoflurane updates.
+    // Revision 3 fixes false client expiry caused by CrossOver's hard links.
     static func install(requestAccess:Bool)throws {
         let fm=FileManager.default
         for folder in [directory,socketDirectory] {
@@ -119,7 +125,7 @@ struct WheelReader {
             let receipt=try JSONDecoder().decode(Receipt.self,from:Data(contentsOf:record))
             guard [1,2].contains(receipt.version),try Storage.hash(executable)==receipt.hash else {throw TunerError.message("已安装滚轮组件发生变化，未覆盖现有文件")}
             try run("/usr/bin/codesign",["--verify","--strict",installed.path])
-            replace=receipt.version==1
+            replace=receipt.needsUpgrade
         }
         if replace {
             guard let resource=Bundle.main.resourceURL else {throw TunerError.message("应用缺少滚轮组件")}
@@ -129,9 +135,12 @@ struct WheelReader {
             defer{try? fm.removeItem(at:stage)}
             try fm.copyItem(at:source,to:stage)
             try run("/usr/bin/codesign",["--verify","--strict",stage.path])
+            let helperInfo=try PropertyListSerialization.propertyList(from:Data(contentsOf:stage.appendingPathComponent("Contents/Info.plist")),format:nil) as? [String:Any]
+            guard helperInfo?["CFBundleVersion"] as? String == String(requiredRevision) else {throw TunerError.message("应用附带的滚轮组件版本不匹配")}
+            try run("/bin/launchctl",["bootout",domain+"/"+label],allowFailure:true)
             if fm.fileExists(atPath:installed.path){try fm.removeItem(at:installed)}
             try fm.moveItem(at:stage,to:installed)
-            try JSONEncoder().encode(Receipt(version:2,hash:try Storage.hash(executable))).write(to:record,options:.atomic)
+            try JSONEncoder().encode(Receipt(version:2,revision:requiredRevision,hash:try Storage.hash(executable))).write(to:record,options:.atomic)
         }
         try run("/usr/bin/codesign",["--verify","--strict",installed.path])
         let plist=agents.appendingPathComponent(label+".plist")

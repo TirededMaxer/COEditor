@@ -2,6 +2,14 @@ import Foundation
 
 func runWheelStatusTests() throws {
     func expect(_ condition:Bool,_ message:String)throws {if !condition {throw TunerError.message(message)}}
+    let legacy=try JSONDecoder().decode(WheelReader.Receipt.self,from:Data("{\"version\":2,\"hash\":\"old\"}".utf8))
+    try expect(legacy.needsUpgrade,"旧协议 2 收据需迁移到文件身份修复版")
+    try expect(WheelReader.Receipt(version:1,revision:nil,hash:"").needsUpgrade,"旧协议需升级")
+    for revision in [WheelReader.requiredRevision,WheelReader.requiredRevision+1] {
+        let receipt=WheelReader.Receipt(version:2,revision:revision,hash:"retained")
+        let restored=try JSONDecoder().decode(WheelReader.Receipt.self,from:JSONEncoder().encode(receipt))
+        try expect(!restored.needsUpgrade && restored.hash=="retained","当前和更新的组件应保留，避免无故改变授权身份")
+    }
     let now=Date().timeIntervalSince1970,pid:Int32=1234
     func data(_ state:String,devices:Int=1,version:Int=2,readerPID:Int32=1234,updated:Double?=nil)->Data {
         Data("{\"protocol\":\(version),\"pid\":\(readerPID),\"state\":\"\(state)\",\"devices\":\(devices),\"reports\":3,\"clients\":1,\"openError\":5,\"updated\":\(updated ?? now)}".utf8)

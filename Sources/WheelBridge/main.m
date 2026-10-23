@@ -1,5 +1,5 @@
-/* The separately installed protocol-2 reader is deliberately retained on app
- * updates. Sevoflurane never hosts it or supplies its code-signing identity. */
+/* Current reader revisions are retained across app updates. Sevoflurane never
+ * hosts the reader or supplies its code-signing identity. */
 #import <AppKit/AppKit.h>
 #import <IOKit/hid/IOHIDManager.h>
 #import <IOKit/hid/IOHIDKeys.h>
@@ -23,17 +23,23 @@ static NSString *lastStatus;
 static uint64_t reports, lastCheck;
 static IOReturn openError;
 static NSMutableDictionary<NSNumber *,NSNumber *> *clients;
-static NSString *allowedWine;
+static struct stat allowedWineIdentity;
+static BOOL haveWineIdentity;
 static BOOL testNoHID;
 static uint64_t lastClient, authUntil, lastPrune;
 static int requestFD;
 static void requests(void);
 static BOOL acceptedClient(int pid,uint64_t birth) {
     if (!birth || cx_wheel_process_birth(pid)!=birth) return NO;
-    if (testNoHID) return YES;
     char path[PROC_PIDPATHINFO_MAXSIZE];
     if (proc_pidpath(pid,path,sizeof(path))<=0) return NO;
-    return allowedWine && [[@(path) stringByResolvingSymlinksInPath] isEqualToString:allowedWine];
+    /* CrossOver's winetemp/*.exe loaders are hard links to Wine. The vnode's
+     * reported path can change while a process is alive; symlink resolution
+     * cannot canonicalize hard links. Authenticate the configured file itself. */
+    struct stat identity;
+    return haveWineIdentity && !stat(path,&identity) &&
+        identity.st_dev==allowedWineIdentity.st_dev && identity.st_ino==allowedWineIdentity.st_ino &&
+        cx_wheel_process_birth(pid)==birth;
 }
 static void status(void) {
     unsigned state = __atomic_load_n(&bridge->state, __ATOMIC_ACQUIRE);
@@ -152,9 +158,12 @@ int main(int argc,const char **argv) { @autoreleasepool {
     NSData *manifest=[NSData dataWithContentsOfFile:[support stringByAppendingPathComponent:@"manifest.json"]];
     NSDictionary *info=manifest ? [NSJSONSerialization JSONObjectWithData:manifest options:0 error:nil]:nil;
     NSString *runtime=info[@"runtime"];
+    NSString *allowedWine=nil;
     if(runtime && [runtime.lastPathComponent isEqualToString:runtime])
         allowedWine=[[[support stringByDeletingLastPathComponent] stringByAppendingPathComponent:
             [runtime stringByAppendingPathComponent:@"lib/wine/x86_64-unix/wine"]] stringByResolvingSymlinksInPath];
+    if(testNoHID && getenv("COEDITOR_WHEEL_TEST_CLIENT_PATH"))allowedWine=@(getenv("COEDITOR_WHEEL_TEST_CLIENT_PATH"));
+    haveWineIdentity=allowedWine && !stat(allowedWine.fileSystemRepresentation,&allowedWineIdentity) && S_ISREG(allowedWineIdentity.st_mode);
     NSString *path=[directory stringByAppendingPathComponent:@"wheel-v1.bin"];
     int fd=open(path.fileSystemRepresentation,O_RDWR|O_CREAT|O_NOFOLLOW,0600);
     if(fd<0 || flock(fd,LOCK_EX|LOCK_NB) || ftruncate(fd,sizeof(*bridge))) return 2;
